@@ -16,15 +16,26 @@
     "onCommand:hltv.refresh"
   ],
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "hltv",
+          "title": "HLTV",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
     "views": {
-      "explorer": [
+      "hltv": [
         {
           "id": "hltv.matches",
-          "name": "HLTV - Matches"
+          "name": "Matches",
+          "icon": "resources/icon.svg"
         },
         {
           "id": "hltv.news",
-          "name": "HLTV - News"
+          "name": "News",
+          "icon": "resources/icon.svg"
         }
       ]
     },
@@ -32,8 +43,29 @@
       {
         "command": "hltv.refresh",
         "title": "HLTV: Refresh data"
+      },
+      {
+        "command": "hltv.copyNewsArticle",
+        "title": "HLTV: Copy Content"
       }
-    ]
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "hltv.refresh",
+          "when": "view == hltv.matches || view == hltv.news",
+          "group": "navigation",
+          "position": "before"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "hltv.copyNewsArticle",
+          "when": "view == hltv.news && viewItem == news",
+          "group": "navigation"
+        }
+      ]
+    }
   },
   "scripts": {
     "compile": "tsc -p ./",

@@ -1,6 +1,43 @@
 import * as vscode from 'vscode';
 import { HLTVTreeDataProvider } from './providers/HLTVTreeDataProvider';
 
+function getNewsCopyText(article: unknown): string {
+  if (typeof article === 'string') {
+    return article;
+  }
+
+  if (article && typeof article === 'object') {
+    const candidate = article as { tooltip?: string; content?: string; title?: string; url?: string };
+    return candidate.tooltip ?? candidate.content ?? candidate.title ?? '';
+  }
+
+  return '';
+}
+
+async function refreshAll(matchesProvider: HLTVTreeDataProvider, newsProvider: HLTVTreeDataProvider): Promise<void> {
+  await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: 'Loading',
+      cancellable: false
+    },
+    async (progress) => {
+      progress.report({ message: 'Loading (Matches)', increment: 0 });
+      await matchesProvider.refresh();
+      progress.report({ message: 'Loading (Matches)', increment: 50 });
+
+      await newsProvider.refresh((message, current, total) => {
+        const label = message || `Loading (News ${current} / ${total})`;
+        const stepValue = total > 0 ? (50 / total) : 50;
+        progress.report({
+          message: label,
+          increment: stepValue
+        });
+      });
+    }
+  );
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   const matchesProvider = new HLTVTreeDataProvider('matches');
   const newsProvider = new HLTVTreeDataProvider('news');
@@ -15,15 +52,24 @@ export function activate(context: vscode.ExtensionContext): void {
     showCollapseAll: true
   });
 
-  const refreshCommand = vscode.commands.registerCommand('hltv.refresh', async () => {
-    await Promise.all([matchesProvider.refresh(), newsProvider.refresh()]);
+  const copyNewsCommand = vscode.commands.registerCommand('hltv.copyNewsArticle', async (article?: unknown) => {
+    const text = getNewsCopyText(article);
+    if (!text) {
+      return;
+    }
+
+    await vscode.env.clipboard.writeText(text);
+    void vscode.window.showInformationMessage('HLTV article copied to clipboard.');
   });
 
-  context.subscriptions.push(matchesView, newsView, refreshCommand);
-  void matchesProvider.refresh();
-  void newsProvider.refresh();
+  const refreshCommand = vscode.commands.registerCommand('hltv.refresh', async () => {
+    await refreshAll(matchesProvider, newsProvider);
+  });
+
+  context.subscriptions.push(matchesView, newsView, refreshCommand, copyNewsCommand);
+  void refreshAll(matchesProvider, newsProvider);
 }
 
 export function deactivate(): void {
-  // no-op for now
+  // no-op
 }

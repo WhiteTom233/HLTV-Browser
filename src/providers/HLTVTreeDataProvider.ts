@@ -11,26 +11,21 @@ export class HLTVTreeDataProvider implements vscode.TreeDataProvider<HLTVNode> {
 
   constructor(private readonly viewKind: HLTVViewKind) {}
 
-  async refresh(): Promise<void> {
+  async refresh(progress?: (message: string, current: number, total: number) => void): Promise<void> {
     try {
       if (this.viewKind === 'matches') {
-        const matches = await fetchMatches();
+        const matches = await fetchMatches(progress);
         this.items = buildMatchNodes(matches);
       } else {
-        const news = await fetchNews();
+        const news = await fetchNews(progress);
         this.items = buildNewsNodes(news);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to load HLTV data.';
-      this.items = [
-        new HLTVNode('Cloudflare verification required', 'message'),
-        new HLTVNode('Open HLTV in a browser and complete the challenge, then refresh.', 'message')
-      ];
-      void vscode.window.showWarningMessage(message, 'Open HLTV').then((selection) => {
-        if (selection === 'Open HLTV') {
-          void vscode.env.openExternal(vscode.Uri.parse('https://www.hltv.org/'));
-        }
-      });
+      this.items = this.viewKind === 'matches'
+        ? [new HLTVNode(`Matches unavailable: ${message}`, 'message')]
+        : [new HLTVNode(`News unavailable: ${message}`, 'message')];
+      void vscode.window.showWarningMessage(message);
     }
 
     this._onDidChangeTreeData.fire();
@@ -41,7 +36,7 @@ export class HLTVTreeDataProvider implements vscode.TreeDataProvider<HLTVNode> {
       return Promise.resolve(this.items);
     }
 
-    return Promise.resolve([]);
+    return Promise.resolve(element.children ?? []);
   }
 
   getTreeItem(element: HLTVNode): vscode.TreeItem {
@@ -57,7 +52,35 @@ function buildMatchNodes(matches: MatchSummary[]): HLTVNode[] {
   };
 
   for (const match of matches) {
-    groups[match.phase].push(new HLTVNode(`${match.title} · ${match.metadata}`, 'match'));
+    const node = new HLTVNode(
+      `${match.teams?.[0] ?? 'Team A'} vs ${match.teams?.[1] ?? 'Team B'} · ${match.format ?? 'Bo3'} · ${match.event ?? 'HLTV Event'}`,
+      'match'
+    );
+    node.description = match.phase;
+    node.tooltip = [
+      `Teams: ${match.teams?.join(' vs ') ?? 'TBD'}`,
+      `Format: ${match.format ?? 'Bo3'}`,
+      `Event: ${match.event ?? 'HLTV Event'}`,
+      `Score: ${match.score ?? 'TBD'}`,
+      `Date: ${match.date ?? 'Unknown time'}`
+    ].join('\n');
+    const openMatchNode = new HLTVNode('Open match page', 'link');
+    openMatchNode.command = {
+      command: 'vscode.open',
+      title: 'Open HLTV Match',
+      arguments: [vscode.Uri.parse(match.url)]
+    };
+
+    node.children = [
+      new HLTVNode(`Teams: ${match.teams?.join(' vs ') ?? 'TBD'}`, 'detail'),
+      new HLTVNode(`Format: ${match.format ?? 'Bo3'}`, 'detail'),
+      new HLTVNode(`Event: ${match.event ?? 'HLTV Event'}`, 'detail'),
+      new HLTVNode(`Date: ${match.date ?? 'Unknown time'}`, 'detail'),
+      new HLTVNode(`Score: ${match.score ?? 'TBD'}`, 'detail'),
+      openMatchNode
+    ];
+    node.collapsibleState = vscode.TreeItemCollapsibleState.Collapsed;
+    groups[match.phase].push(node);
   }
 
   return [
@@ -77,7 +100,15 @@ function buildNewsNodes(news: NewsSummary[]): HLTVNode[] {
   };
 
   for (const item of news) {
-    groups[item.level].push(new HLTVNode(`${item.title} · ${item.publishedAt}`, 'news'));
+    const articleNode = new HLTVNode(`${item.title} · ${item.publishedAt}`, 'news');
+    articleNode.tooltip = item.content ?? item.title;
+    articleNode.command = {
+      command: 'vscode.open',
+      title: 'Open HLTV article',
+      arguments: [vscode.Uri.parse(item.url)]
+    };
+    articleNode.collapsibleState = vscode.TreeItemCollapsibleState.None;
+    groups[item.level].push(articleNode);
   }
 
   return [
@@ -89,9 +120,11 @@ function buildNewsNodes(news: NewsSummary[]): HLTVNode[] {
 }
 
 export class HLTVNode extends vscode.TreeItem {
-  constructor(label: string, public readonly kind: 'section' | 'match' | 'news' | 'message') {
-    super(label, vscode.TreeItemCollapsibleState.None);
-    this.description = kind === 'section' ? 'group' : kind === 'message' ? 'status' : kind;
+  children?: HLTVNode[];
+
+  constructor(label: string, public readonly kind: 'section' | 'match' | 'news' | 'detail' | 'link' | 'message') {
+    super(label, kind === 'section' || kind === 'match' ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
+    this.description = kind === 'section' ? 'group' : kind === 'message' ? 'status' : kind === 'detail' ? 'detail' : kind === 'link' ? 'open' : 'match';
     this.contextValue = kind;
   }
 }
