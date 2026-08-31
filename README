@@ -1,0 +1,33 @@
+# HLTV Browser VSCode Extension
+
+这是一个 VSCode 扩展插件。
+
+有两大核心内容：
+1. 比赛面板显示所有比赛。  
+   分为过去的，正在进行的和将来的。  
+   比赛支持根据队伍、赛事进行筛选。  
+   过去的比赛要显示比赛时间，选手的 Rating 和 Performance（也就是对位）。  
+   正在进行的比赛要能实时显示比分，以及击杀提示（击杀人、被击杀人、辅助击杀人、击杀武器、击杀方式等）。  
+   将来的比赛要能够显示选手的最近 Rating 以及队伍地图的最近胜率，以及比赛时间。
+2. 新闻面板显示最近的大新闻，以及能够根据时间、等级（大新闻、快讯）和关键词筛选新闻，并有详细页面，详细页面需要有评论。
+
+核心要素：
+1. 这是一个类似于摸鱼的插件。所以所有的页面都必须以纯文字在 VSCode 侧边栏显示。没有任何花里胡哨的背景、图标、字体等，尽量不要让人一眼看出来这是 HLTV 页面。（纯文字就挺好的）
+2. 网站部分访问可能需要 Cloudflare 验证，如果弹出来了，就请用户自己点击一下 Verification box 通过就行了。
+
+项目架构：
+- `src/extension.ts`: 扩展入口，注册 Matches / News 两个树视图并绑定刷新命令。
+- `src/providers/HLTVTreeDataProvider.ts`: 负责把抓取后的数据转成 VS Code TreeItem 列表，显示过去/正在进行/将来的比赛，以及头条/快讯。
+- `src/services/hltvClient.ts`: 负责访问 HLTV 页面、检测 Cloudflare 验证、抓取 HTML 并使用 cheerio 做结构化解析。
+
+当前开发状态：
+- 已完成基础工程骨架；
+- 已接入 HLTV 页面抓取与 Cloudflare 兜底提示；
+- 仍需在真实 HLTV 页面通过验证后，继续补充低层数据字段和更精细的筛选逻辑。
+
+本地准备工作：
+1. 安装 Node.js 20+（已在本环境通过 nvm 完成）；
+2. 在仓库根目录执行 `npm install`；
+3. 执行 `npm run compile` 进行 TypeScript 编译验证；
+4. 在 VS Code 中按 F5 启动扩展开发宿主。
+

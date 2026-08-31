@@ -1,0 +1,52 @@
+{
+  "name": "hltv-browser-vscode-extension",
+  "displayName": "HLTV Browser",
+  "version": "0.1.0",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onView:hltv.matches",
+    "onView:hltv.news",
+    "onCommand:hltv.refresh"
+  ],
+  "contributes": {
+    "views": {
+      "explorer": [
+        {
+          "id": "hltv.matches",
+          "name": "HLTV - Matches"
+        },
+        {
+          "id": "hltv.news",
+          "name": "HLTV - News"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "hltv.refresh",
+        "title": "HLTV: Refresh data"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.10",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.4.5"
+  },
+  "dependencies": {
+    "cheerio": "^1.2.0",
+    "playwright": "^1.55.0"
+  }
+}
