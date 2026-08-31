@@ -1,0 +1,5 @@
+{
+  "terminal.integrated.env.linux": {
+    "PATH": "${env:PATH}:/home/cyril/.nvm/versions/node/v20.20.2/bin"
+  }
+}
