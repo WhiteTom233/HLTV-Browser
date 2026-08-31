@@ -12,6 +12,25 @@ export interface MatchSummary {
   date?: string;
   map?: string;
   score?: string;
+  details?: MatchDetail;
+}
+
+export interface MatchMapResult {
+  map: string;
+  score: string;
+  summary?: string;
+}
+
+export interface MatchDetail {
+  teams: [string, string];
+  event?: string;
+  date?: string;
+  format?: string;
+  phase: MatchSummary['phase'];
+  score?: string;
+  summary?: string;
+  liveScore?: string;
+  mapResults: MatchMapResult[];
 }
 
 export interface NewsSummary {
@@ -98,11 +117,111 @@ function classifyMatchPhase(raw: string): MatchSummary['phase'] {
   return 'past';
 }
 
-function buildMatchLabel(values: string[]): string {
+function cleanTitleText(value: string): string {
+  return normalizeText(value)
+    .replace(/([a-z])(?=(?:an?|\d+)\s*(?:seconds?|minutes?|hours?|days?)\s+ago)/gi, '$1 ')
+    .replace(/\s+\d+\s*comments?\b.*$/gi, '')
+    .replace(/\s+(?:an?|[0-9]+)\s*(?:seconds?|minutes?|hours?|days?)\s+ago.*$/gi, '')
+    .replace(/#\d+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function splitCompactTeamNames(value: string): string[] {
+  const compact = normalizeText(value).replace(/[^A-Za-z0-9]/g, '');
+  if (!compact) {
+    return [];
+  }
+
+  if (compact.toLowerCase().includes('vs')) {
+    return compact.split(/vs/i).flatMap((part) => splitCompactTeamNames(part)).filter(Boolean);
+  }
+
+  const splitIndex = [...compact].findIndex((char, index, chars) => {
+    if (index === 0 || index === chars.length - 1) {
+      return false;
+    }
+    const prevIsWordBoundary = /[A-Za-z0-9]/.test(chars[index - 1]);
+    const prevLower = /[a-z]/.test(chars[index - 1]);
+    const nextLower = /[a-z]/.test(chars[index + 1] ?? '');
+    const remainingUpper = chars.slice(index + 1).length >= 2 && [...chars.slice(index + 1)].every((nextChar) => /[A-Z0-9]/.test(nextChar));
+    return prevIsWordBoundary && /[A-Z]/.test(char) && (nextLower || (prevLower && remainingUpper));
+  });
+
+  if (splitIndex > 0 && splitIndex < compact.length - 1) {
+    const first = compact.slice(0, splitIndex);
+    const second = compact.slice(splitIndex);
+    return [first, second].map((part) => normalizeText(part)).filter(Boolean);
+  }
+
+  return [compact];
+}
+
+function slugToReadableTitle(slug: string): string {
+  const withoutHash = slug.replace(/#.*$/, '').trim();
+  if (!withoutHash) {
+    return 'HLTV';
+  }
+
+  const segments = decodeURIComponent(withoutHash)
+    .split('-')
+    .filter(Boolean)
+    .map((segment) => segment.replace(/^vs$/i, 'vs'));
+
+  if (segments.length === 0) {
+    return 'HLTV';
+  }
+
+  const normalized = segments.join(' ');
+  const withVsSpacing = normalized.replace(/\bvs\b/gi, ' vs ');
+  const words = withVsSpacing.split(/\s+/).filter(Boolean);
+  const readable = words
+    .map((word) => {
+      const lower = word.toLowerCase();
+      if (/^(mouz|nip|g2|furia|vp|vit|aurora|spirit|falcons|astral|navi|pr|gambit|blast|hltv|m80|ruby|ex|vs)$/i.test(lower)) {
+        return lower === 'vs' ? 'vs' : lower === 'falcons' ? 'Falcons' : word.toUpperCase();
+      }
+      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    })
+    .join(' ');
+
+  return readable.replace(/\s+vs\s+/gi, ' vs ');
+}
+
+function buildMatchLabel(values: string[], href?: string): string {
+  const hrefTitle = href ? slugToReadableTitle(new URL(href).pathname.split('/').filter(Boolean).slice(-1)[0] ?? '') : '';
+  if (hrefTitle && hrefTitle !== 'HLTV') {
+    return hrefTitle;
+  }
+
+  const teamCandidates = values.flatMap((value) => splitCompactTeamNames(value));
   const cleaned = values
-    .map((value) => normalizeText(value))
+    .map((value) => cleanTitleText(value))
     .filter((value) => value && value.length > 3 && !/^bo3$/i.test(value) && !/^live$/i.test(value) && !/^\d+\s*\(\d+\)\s*\d+\s*\(\d+\)$/i.test(value))
     .filter((value, index, arr) => arr.indexOf(value) === index);
+
+  const sanitizeTeamToken = (value: string): string => normalizeText(value)
+    .replace(/^(?:live\s*)+/i, '')
+    .replace(/(?:\s*bo\d+)+$/i, '')
+    .replace(/(?:\s*live)+$/i, '')
+    .trim();
+
+  const splitTeams = teamCandidates
+    .map((value) => sanitizeTeamToken(value))
+    .flatMap((value) => {
+      if (!value) {
+        return [];
+      }
+      const nested = splitCompactTeamNames(value);
+      return nested.length > 1 ? nested.map((part) => sanitizeTeamToken(part)) : [value];
+    })
+    .filter((value) => value && value.length > 2 && !/^bo\d+$/i.test(value) && !/^live$/i.test(value) && !/^\d+\s*\(\d+\)\s*\d+\s*\(\d+\)$/i.test(value))
+    .filter((value, index, arr) => arr.indexOf(value) === index)
+    .filter((value) => !/qualifier|league|cup|blast|esl|fissure|clutch|series|open|invite|season/i.test(value));
+
+  if (splitTeams.length >= 2) {
+    return `${splitTeams[0]} vs ${splitTeams[1]}`;
+  }
 
   if (cleaned.length === 0) {
     return 'HLTV Match';
@@ -116,13 +235,247 @@ function buildMatchLabel(values: string[]): string {
   return `${teamText} · ${format} · ${event}`;
 }
 
-function buildNewsLabel(values: string[]): string {
+function buildNewsLabel(values: string[], href?: string): string {
+  const hrefTitle = href ? slugToReadableTitle(new URL(href).pathname.split('/').filter(Boolean).slice(-1)[0] ?? '') : '';
+  if (hrefTitle && hrefTitle !== 'HLTV') {
+    return hrefTitle;
+  }
+
   const cleaned = values
-    .map((value) => normalizeText(value))
+    .map((value) => cleanTitleText(value))
     .filter((value) => value && value.length > 6)
     .filter((value, index, arr) => arr.indexOf(value) === index);
 
   return cleaned[0] ?? 'HLTV News';
+}
+
+function pickTeamNamesFromPage(page: Page): Promise<[string, string]> {
+  return page.evaluate(() => {
+    const normalizeText = (value: string): string => value.replace(/\s+/g, ' ').replace(/\u00a0/g, ' ').trim();
+    const names = Array.from(document.querySelectorAll('.teamName, .dropdownTeam'))
+      .map((element) => normalizeText((element.textContent ?? '').replace(/\s+/, ' ')))
+      .filter((value) => value && value.length > 1)
+      .filter((value, index, array) => array.indexOf(value) === index)
+      .slice(0, 2);
+
+    if (names.length >= 2) {
+      return [names[0], names[1]] as [string, string];
+    }
+
+    const matchText = (document.body?.innerText ?? '').replace(/\s+/g, ' ');
+    const fallback = matchText.match(/([A-Z0-9][A-Za-z0-9 .'-]{1,20})\s+([0-9]{1,2}:?[0-9]{0,2})\s+([A-Z0-9][A-Za-z0-9 .'-]{1,20})/);
+    if (fallback) {
+      return [fallback[1], fallback[3]] as [string, string];
+    }
+
+    return ['Team A', 'Team B'];
+  });
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function findMapName(text: string): string | undefined {
+  const mapNames = ['Dust2', 'Mirage', 'Nuke', 'Inferno', 'Ancient', 'Overpass', 'Vertigo', 'Train', 'Anubis', 'Cache', 'Tuscan', 'Cobblestone', 'Office'];
+  for (const mapName of [...mapNames].sort((a, b) => b.length - a.length)) {
+    if (new RegExp(mapName, 'i').test(text)) {
+      return mapName;
+    }
+  }
+  return undefined;
+}
+
+function parseMapHolderText(text: string): MatchMapResult | undefined {
+  const compact = normalizeText(text).replace(/\s+/g, '');
+  const mapName = findMapName(compact);
+  if (!mapName) {
+    return undefined;
+  }
+
+  const statsIndex = compact.indexOf('STATS');
+  if (statsIndex !== -1) {
+    const beforeSummary = compact.slice(compact.indexOf(mapName) + mapName.length, statsIndex);
+    const afterSummary = compact.slice(statsIndex + 'STATS'.length);
+    const summaryMatch = afterSummary.match(/\(([^)]*)\)/);
+    const leftScoreMatch = beforeSummary.match(/(\d+)$/);
+    const rightText = afterSummary.replace(/\([^)]*\)/, '');
+    const rightScoreMatch = rightText.match(/(\d+)$/);
+
+    if (leftScoreMatch && rightScoreMatch) {
+      return {
+        map: mapName,
+        score: `${leftScoreMatch[1]}-${rightScoreMatch[1]}`,
+        summary: summaryMatch ? normalizeText(summaryMatch[1]).replace(/;\s*/g, '; ') : 'Map score history'
+      };
+    }
+  }
+
+  return { map: mapName, score: 'TBD', summary: 'Map not started' };
+}
+
+function parseMatchMapResults(text: string, teams: [string, string]): MatchMapResult[] {
+  const results: MatchMapResult[] = [];
+  const matchBlocks = [...text.matchAll(/(?:^|\s)([A-Za-z0-9][A-Za-z0-9' -]*?(?:Dust2|Mirage|Nuke|Inferno|Ancient|Overpass|Vertigo|Train|Anubis|Cache|Tuscan|Cobblestone|Office)[A-Za-z0-9' -]*?)\s*(?:\b|[A-Z0-9])(?:[A-Za-z0-9]+\d+STATS\s*\([^)]*\)[A-Za-z0-9]+\d+|[A-Za-z0-9]+-[A-Za-z0-9]+-?)/gi)];
+  if (!matchBlocks.length) {
+    const mapHolders = [...new Set((text.match(/(?:Nuke|Mirage|Inferno|Ancient|Dust2|Overpass|Vertigo|Train|Anubis|Cache|Tuscan|Cobblestone|Office)/gi) ?? []))];
+    for (const mapName of mapHolders) {
+      results.push({ map: mapName, score: 'TBD', summary: 'Map not started' });
+    }
+    return results.slice(0, 5);
+  }
+
+  for (const block of matchBlocks) {
+    const parsed = parseMapHolderText(block[0]);
+    if (parsed) {
+      results.push(parsed);
+    }
+  }
+
+  const seen = new Set<string>();
+  return results.filter((entry) => {
+    const key = `${entry.map}-${entry.score}-${entry.summary ?? ''}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  }).slice(0, 5);
+}
+
+function getFinalSeriesScore(mapResults: MatchMapResult[]): string | undefined {
+  if (!mapResults.length) {
+    return undefined;
+  }
+
+  let left = 0;
+  let right = 0;
+
+  for (const mapResult of mapResults) {
+    const scoreParts = mapResult.score.split('-').map((part) => Number.parseInt(part, 10));
+    if (scoreParts.length !== 2 || scoreParts.some((part) => Number.isNaN(part))) {
+      continue;
+    }
+
+    const [scoreLeft, scoreRight] = scoreParts;
+    if (scoreLeft > scoreRight) {
+      left += 1;
+    } else if (scoreRight > scoreLeft) {
+      right += 1;
+    }
+  }
+
+  return `${left}:${right}`;
+}
+
+function normalizeScoreText(value: string): string | undefined {
+  const text = normalizeText(value);
+  const liveMatch = text.match(/^(\d+)\s*\(\d+\)\s*(\d+)\s*\(\d+\)$/i);
+  if (liveMatch) {
+    return `${liveMatch[1]}-${liveMatch[2]}`;
+  }
+
+  const simpleMatch = text.match(/^(\d+)\s*[:\-]\s*(\d+)$/i);
+  if (simpleMatch) {
+    return `${simpleMatch[1]}-${simpleMatch[2]}`;
+  }
+
+  const reversedSimple = text.match(/^(\d+)\s*(?:\|\s*|\s+)\s*(\d+)$/i);
+  if (reversedSimple) {
+    return `${reversedSimple[1]}-${reversedSimple[2]}`;
+  }
+
+  return undefined;
+}
+
+async function getMatchScheduleInfo(page: Page): Promise<{ dateTime?: string; date?: string; rawTime?: string } | undefined> {
+  return await page.evaluate(() => {
+    const timeEl = document.querySelector('.time[data-unix]');
+    const dateEl = document.querySelector('.date[data-unix]');
+    const rawUnix = Number(timeEl?.getAttribute('data-unix') ?? dateEl?.getAttribute('data-unix') ?? '');
+    if (!Number.isFinite(rawUnix)) {
+      return undefined;
+    }
+
+    const utc = new Date(rawUnix);
+    const local = new Date(rawUnix + 8 * 60 * 60 * 1000);
+    const iso = local.toISOString();
+    return {
+      dateTime: `${iso.slice(0, 10)} ${iso.slice(11, 16)} (UTC+8)`,
+      date: iso.slice(0, 10),
+      rawTime: `${iso.slice(11, 16)}`,
+      visibleTime: timeEl?.textContent?.trim() ?? utc.toISOString().slice(11, 16),
+      visibleDate: dateEl?.textContent?.trim() ?? iso.slice(0, 10)
+    };
+  });
+}
+
+export async function fetchMatchDetail(matchUrl: string): Promise<MatchDetail | null> {
+  return await withPage(matchUrl, async (page) => {
+    const title = await page.title();
+    const bodyText = await page.locator('body').innerText();
+    const text = normalizeText(bodyText);
+    const teams = await pickTeamNamesFromPage(page);
+    const phase: MatchSummary['phase'] = /live/i.test(bodyText) ? 'live' : /upcoming|starting|today|tomorrow|scheduled/i.test(bodyText) ? 'upcoming' : 'past';
+    const schedule = await getMatchScheduleInfo(page);
+    const date = schedule?.dateTime ?? bodyText.match(/\d{1,2}(?:st|nd|rd|th) of [A-Za-z]+ \d{4}/i)?.[0]
+      ?? bodyText.match(/[A-Za-z]+ \d{1,2}, \d{4}/i)?.[0]
+      ?? undefined;
+    const event = title.includes(' at ') ? title.split(' at ')[1]?.replace(/\s+-\s+HLTV.*$/i, '') : undefined;
+    const mapResults = await page.evaluate(() => {
+      const mapNames = ['Dust2', 'Mirage', 'Nuke', 'Inferno', 'Ancient', 'Overpass', 'Vertigo', 'Train', 'Anubis', 'Cache', 'Tuscan', 'Cobblestone', 'Office'];
+      const parseMapHolder = (text: string) => {
+        const compact = text.replace(/\s+/g, '');
+        const mapName = mapNames.find((name) => compact.toLowerCase().includes(name.toLowerCase()));
+        if (!mapName) {
+          return null;
+        }
+
+        const statsIndex = compact.toUpperCase().indexOf('STATS');
+        if (statsIndex !== -1) {
+          const beforeSummary = compact.slice(compact.indexOf(mapName) + mapName.length, statsIndex);
+          const afterSummary = compact.slice(statsIndex + 'STATS'.length);
+          const summaryMatch = afterSummary.match(/\(([^)]*)\)/);
+          const leftScoreMatch = beforeSummary.match(/(\d+)$/i);
+          const rightText = afterSummary.replace(/\([^)]*\)/, '');
+          const rightScoreMatch = rightText.match(/(\d+)$/i);
+
+          if (leftScoreMatch && rightScoreMatch) {
+            return {
+              map: mapName,
+              score: `${leftScoreMatch[1]}-${rightScoreMatch[1]}`,
+              summary: ((summaryMatch ? summaryMatch[1] : '').replace(/\s+/g, ' ').trim() || 'Map score history').replace(/;\s*/g, '; ')
+            };
+          }
+        }
+
+        return { map: mapName, score: 'TBD', summary: 'Map not started' };
+      };
+
+      return Array.from(document.querySelectorAll('.mapholder'))
+        .map((node) => parseMapHolder((node.textContent || '').replace(/\s+/g, ' ').trim()))
+        .filter((entry): entry is { map: string; score: string; summary: string } => Boolean(entry));
+    });
+    const score = getFinalSeriesScore(mapResults);
+    const liveScore = await page.evaluate(() => {
+      const liveText = document.querySelector('#scoreboardElement')?.textContent ?? document.querySelector('.scoreboard')?.textContent ?? '';
+      const scoreText = (liveText || '').replace(/\s+/g, ' ').trim();
+      const scoreMatch = scoreText.match(/R:\s*\d+\s*-\s*\d+.*?\d+\s*:\s*\d+/i);
+      return scoreMatch ? scoreMatch[0] : undefined;
+    });
+
+    return {
+      teams,
+      event,
+      date,
+      format: bodyText.match(/Best of \d+/i)?.[0] ?? 'Bo3',
+      phase,
+      score,
+      liveScore,
+      summary: bodyText.slice(0, 280),
+      mapResults
+    } satisfies MatchDetail;
+  });
 }
 
 export async function fetchMatches(progress?: (message: string, current: number, total: number) => void): Promise<MatchSummary[]> {
@@ -130,10 +483,113 @@ export async function fetchMatches(progress?: (message: string, current: number,
   const items = await withPage(`${HLTV_BASE_URL}/matches`, async (page) => {
     return await page.$$eval('a[href*="/matches/"]', (links) => {
       const normalizeText = (value: string): string => value.replace(/\s+/g, ' ').replace(/\u00a0/g, ' ').trim();
+      const cleanTitleText = (value: string): string => normalizeText(value)
+        .replace(/([a-z])(?=(?:an?|\d+)\s*(?:seconds?|minutes?|hours?|days?)\s+ago)/gi, '$1 ')
+        .replace(/\s+\d+\s*comments?\b.*$/gi, '')
+        .replace(/\s+(?:an?|[0-9]+)\s*(?:seconds?|minutes?|hours?|days?)\s+ago.*$/gi, '')
+        .replace(/#\d+$/g, '')
+        .trim();
+      const splitCompactTeamNames = (value: string): string[] => {
+        const compact = normalizeText(value).replace(/[^A-Za-z0-9]/g, '');
+        if (!compact) {
+          return [];
+        }
+        if (compact.toLowerCase().includes('vs')) {
+          return compact.split(/vs/i).flatMap((part) => splitCompactTeamNames(part)).filter(Boolean);
+        }
+        const splitIndex = [...compact].findIndex((char, index, chars) => {
+          if (index === 0 || index === chars.length - 1) {
+            return false;
+          }
+          const prevIsWordBoundary = /[A-Za-z0-9]/.test(chars[index - 1]);
+          const prevLower = /[a-z]/.test(chars[index - 1]);
+          const nextLower = /[a-z]/.test(chars[index + 1] ?? '');
+          const remainingUpper = chars.slice(index + 1).length >= 2 && [...chars.slice(index + 1)].every((nextChar) => /[A-Z0-9]/.test(nextChar));
+          return prevIsWordBoundary && /[A-Z]/.test(char) && (nextLower || (prevLower && remainingUpper));
+        });
+        if (splitIndex > 0 && splitIndex < compact.length - 1) {
+          const first = compact.slice(0, splitIndex);
+          const second = compact.slice(splitIndex);
+          return [first, second].map((part) => normalizeText(part)).filter(Boolean);
+        }
+        return [compact];
+      };
+      const slugToReadableTitle = (slug: string): string => {
+        const withoutHash = slug.replace(/#.*$/, '').trim();
+        if (!withoutHash) {
+          return 'HLTV';
+        }
+        const words = decodeURIComponent(withoutHash)
+          .split('-')
+          .filter(Boolean)
+          .join(' ')
+          .replace(/\bvs\b/gi, ' vs ')
+          .split(/\s+/)
+          .filter(Boolean)
+          .map((word) => {
+            if (/^(mouz|nip|g2|furia|vp|vit|aurora|spirit|falcons|astral|navi|m80|ruby|ex|blast|hltv|vs)$/i.test(word)) {
+              return word.toLowerCase() === 'falcons' ? 'Falcons' : word.toUpperCase();
+            }
+            return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+          });
+        return words.join(' ').replace(/\s+vs\s+/gi, ' vs ');
+      };
+      const sanitizeTeamToken = (value: string): string => normalizeText(value)
+        .replace(/^(?:live\s*)+/i, '')
+        .replace(/(?:\s*bo\d+)+$/i, '')
+        .replace(/(?:\s*live)+$/i, '')
+        .trim();
+      const isEventLikeValue = (value: string): boolean => /qualifier|league|cup|blast|esl|fissure|clutch|series|open|invite|season|games/i.test(value);
+      const isLikelyTeamValue = (value: string): boolean => {
+        const clean = normalizeText(value);
+        if (!clean || /^bo\d+$/i.test(clean) || /^live$/i.test(clean) || /^\d+\s*\(\d+\)\s*\d+\s*\(\d+\)$/i.test(clean) || /^\d+\s*:\s*\d+$/i.test(clean)) {
+          return false;
+        }
+        return !isEventLikeValue(clean);
+      };
 
-      const buildMatchLabel = (values: string[]): string => {
-        const cleaned = values
-          .map((value) => normalizeText(value))
+      const extractTeamPair = (valueList: string[]): [string, string] => {
+        const teamCandidates = valueList
+          .filter(isLikelyTeamValue)
+          .flatMap((value) => splitCompactTeamNames(value))
+          .map((value) => sanitizeTeamToken(value))
+          .flatMap((value) => {
+            if (!value) {
+              return [];
+            }
+            const nested = splitCompactTeamNames(value);
+            return nested.length > 1 ? nested.map((part) => sanitizeTeamToken(part)) : [value];
+          })
+          .filter((value) => value && value.length > 2 && !/^bo\d+$/i.test(value) && !/^live$/i.test(value) && !/^\d+\s*\(\d+\)\s*\d+\s*\(\d+\)$/i.test(value))
+          .filter((value, index, arr) => arr.indexOf(value) === index)
+          .filter((value) => !isEventLikeValue(value));
+
+        if (teamCandidates.length >= 2) {
+          return [teamCandidates[0], teamCandidates[1]];
+        }
+
+        const fallback = valueList
+          .map((value) => cleanTitleText(value))
+          .filter((value) => value && value.length > 3 && !/^bo3$/i.test(value) && !/^live$/i.test(value) && !/^\d+\s*\(\d+\)\s*\d+\s*\(\d+\)$/i.test(value))
+          .filter((value, index, arr) => arr.indexOf(value) === index)
+          .filter((value) => !/qualifier|league|cup|blast|esl|fissure|clutch|series|open|invite|season/i.test(value));
+
+        return fallback.length >= 2 ? [fallback[0], fallback[1]] : ['Team A', 'Team B'];
+      };
+
+      const buildMatchLabel = (href: string, valueList: string[]): string => {
+        const [firstTeam, secondTeam] = extractTeamPair(valueList);
+        if (firstTeam && secondTeam && firstTeam !== 'Team A' && secondTeam !== 'Team B') {
+          return `${firstTeam} vs ${secondTeam}`;
+        }
+
+        const hrefTitle = slugToReadableTitle(new URL(href).pathname.split('/').filter(Boolean).slice(-1)[0] ?? '');
+        if (hrefTitle && hrefTitle !== 'HLTV') {
+          return hrefTitle;
+        }
+
+        const cleaned = valueList
+          .map((value) => cleanTitleText(value))
           .filter((value) => value && value.length > 3 && !/^bo3$/i.test(value) && !/^live$/i.test(value) && !/^\d+\s*\(\d+\)\s*\d+\s*\(\d+\)$/i.test(value))
           .filter((value, index, arr) => arr.indexOf(value) === index);
 
@@ -146,7 +602,7 @@ export async function fetchMatches(progress?: (message: string, current: number,
 
       const byHref = new Map<string, Set<string>>();
 
-      for (const link of links) {
+      for (const link of Array.from(document.querySelectorAll('a.match-top, a.match-info, a.match-teams, a.match-team-livescore'))) {
         const href = (link as HTMLAnchorElement).href;
         const text = (link.textContent || '').trim();
         if (!href || !text) {
@@ -166,15 +622,33 @@ export async function fetchMatches(progress?: (message: string, current: number,
         .filter(({ values }) => values.some((value) => value.length > 6))
         .slice(0, 12)
         .map(({ href, values }) => {
-          const label = buildMatchLabel(values);
+          const label = buildMatchLabel(href, values);
           const scoreText = values.find((value) => /\d+\s*\(\d+\)\s*\d+\s*\(\d+\)/i.test(value) || /\d+\s*:\s*\d+/.test(value));
           const phaseHint = values.some((value) => /live/i.test(value)) ? 'live' : scoreText ? 'live' : 'past';
           const format = values.find((value) => /^bo\d+$/i.test(normalizeText(value))) ?? 'Bo3';
-          const cleaned = values
-            .map((value) => normalizeText(value))
-            .filter((value) => value && value.length > 3 && !/^bo3$/i.test(value) && !/^live$/i.test(value) && !/^\d+\s*\(\d+\)\s*\d+\s*\(\d+\)$/i.test(value) && !/qualifier|league|cup|blast|esl|fissure|clutch|series|open|invite|season/i.test(value));
-          const teams: [string, string] = cleaned.slice(0, 2).length === 2
-            ? [cleaned[0], cleaned[1]]
+          const sanitizeTeamToken = (value: string): string => normalizeText(value)
+            .replace(/^(?:live\s*)+/i, '')
+            .replace(/(?:\s*bo\d+)+$/i, '')
+            .replace(/(?:\s*live)+$/i, '')
+            .replace(/\d+$/, '')
+            .trim();
+          const isEventLikeValue = (value: string): boolean => /qualifier|league|cup|blast|esl|fissure|clutch|series|open|invite|season|games/i.test(value);
+          const isLikelyTeamValue = (value: string): boolean => {
+            const clean = normalizeText(value);
+            if (!clean || /^bo\d+$/i.test(clean) || /^live$/i.test(clean) || /^\d+\s*\(\d+\)\s*\d+\s*\(\d+\)$/i.test(clean) || /^\d+\s*:\s*\d+$/i.test(clean)) {
+              return false;
+            }
+            return !isEventLikeValue(clean);
+          };
+          const teamCandidates = values
+            .filter(isLikelyTeamValue)
+            .flatMap((value) => splitCompactTeamNames(value))
+            .map((value) => sanitizeTeamToken(value))
+            .filter((value) => value && value.length > 2 && !/^bo\d+$/i.test(value) && !/^live$/i.test(value) && !/^\d+\s*\(\d+\)\s*\d+\s*\(\d+\)$/i.test(value))
+            .filter((value, index, arr) => arr.indexOf(value) === index)
+            .filter((value) => !isEventLikeValue(value));
+          const teams: [string, string] = teamCandidates.length >= 2
+            ? [teamCandidates[0], teamCandidates[1]]
             : ['Team A', 'Team B'];
           const event = values.find((value) => /qualifier|league|cup|blast|esl|fissure|clutch|series|open|invite|season/i.test(value)) ?? 'HLTV Event';
           return {
@@ -222,9 +696,41 @@ export async function fetchNews(progress?: (message: string, current: number, to
   try {
     items = await withPage(`${HLTV_BASE_URL}/`, async (page) => {
       const list = await page.$$eval('a[href*="/news/"]', (links) => {
-        const buildNewsLabel = (values: string[]): string => {
+        const normalizeText = (value: string): string => value.replace(/\s+/g, ' ').replace(/\u00a0/g, ' ').trim();
+        const cleanTitleText = (value: string): string => normalizeText(value)
+          .replace(/([a-z])(?=(?:an?|\d+)\s*(?:seconds?|minutes?|hours?|days?)\s+ago)/gi, '$1 ')
+          .replace(/\s+\d+\s*comments?\b.*$/gi, '')
+          .replace(/\s+(?:an?|[0-9]+)\s*(?:seconds?|minutes?|hours?|days?)\s+ago.*$/gi, '')
+          .replace(/#\d+$/g, '')
+          .trim();
+        const slugToReadableTitle = (slug: string): string => {
+          const withoutHash = slug.replace(/#.*$/, '').trim();
+          if (!withoutHash) {
+            return 'HLTV';
+          }
+          const words = decodeURIComponent(withoutHash)
+            .split('-')
+            .filter(Boolean)
+            .join(' ')
+            .replace(/\bvs\b/gi, ' vs ')
+            .split(/\s+/)
+            .filter(Boolean)
+            .map((word) => {
+              if (/^(mouz|nip|g2|furia|vp|vit|aurora|spirit|falcons|astral|navi|m80|ruby|ex|blast|hltv|vs)$/i.test(word)) {
+                return word.toUpperCase();
+              }
+              return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+            });
+          return words.join(' ').replace(/\s+vs\s+/gi, ' vs ');
+        };
+        const buildNewsLabel = (href: string, values: string[]): string => {
+          const hrefTitle = slugToReadableTitle(new URL(href).pathname.split('/').filter(Boolean).slice(-1)[0] ?? '');
+          if (hrefTitle && hrefTitle !== 'HLTV') {
+            return hrefTitle;
+          }
+
           const cleaned = values
-            .map((value) => value.replace(/\s+/g, ' ').trim())
+            .map((value) => cleanTitleText(value))
             .filter((value) => value && value.length > 6)
             .filter((value, index, arr) => arr.indexOf(value) === index);
 
@@ -251,7 +757,7 @@ export async function fetchNews(progress?: (message: string, current: number, to
           .slice(0, 8)
           .map(({ href, values }) => ({
             href,
-            title: buildNewsLabel(values),
+            title: buildNewsLabel(href, values),
             publishedAt: 'Today'
           }));
       });

@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { fetchMatches, fetchNews, type MatchSummary, type NewsSummary } from '../services/hltvClient';
+import { fetchMatchDetail, fetchMatches, fetchNews, type MatchSummary, type NewsSummary } from '../services/hltvClient';
 
 export type HLTVViewKind = 'matches' | 'news';
 
@@ -31,12 +31,33 @@ export class HLTVTreeDataProvider implements vscode.TreeDataProvider<HLTVNode> {
     this._onDidChangeTreeData.fire();
   }
 
-  getChildren(element?: HLTVNode): Thenable<HLTVNode[]> {
+  async getChildren(element?: HLTVNode): Promise<HLTVNode[]> {
     if (!element) {
-      return Promise.resolve(this.items);
+      return this.items;
     }
 
-    return Promise.resolve(element.children ?? []);
+    if (element.kind === 'match') {
+      if (element.children && element.children.length > 0) {
+        return element.children;
+      }
+
+      const matchUrl = element.matchUrl;
+      if (!matchUrl) {
+        return element.children ?? [];
+      }
+
+      try {
+        const detail = await fetchMatchDetail(matchUrl);
+        element.children = buildMatchDetailNodes(detail, element.label as string, matchUrl);
+        return element.children;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unable to load match details.';
+        element.children = [new HLTVNode(`Match detail unavailable: ${message}`, 'detail')];
+        return element.children;
+      }
+    }
+
+    return element.children ?? [];
   }
 
   getTreeItem(element: HLTVNode): vscode.TreeItem {
@@ -52,45 +73,67 @@ function buildMatchNodes(matches: MatchSummary[]): HLTVNode[] {
   };
 
   for (const match of matches) {
-    const node = new HLTVNode(
-      `${match.teams?.[0] ?? 'Team A'} vs ${match.teams?.[1] ?? 'Team B'} · ${match.format ?? 'Bo3'} · ${match.event ?? 'HLTV Event'}`,
-      'match'
-    );
-    node.description = match.phase;
+    const phase = match.phase ?? 'upcoming';
+    const prefix = phase === 'live' ? '[LIVE] ' : '';
+    const label = `${prefix}${match.teams?.[0] ?? 'Team A'} vs ${match.teams?.[1] ?? 'Team B'} · ${match.format ?? 'Bo3'} · ${match.event ?? 'HLTV Event'}`;
+    const node = new HLTVNode(label, 'match');
+    node.description = phase;
+    node.matchUrl = match.url;
     node.tooltip = [
       `Teams: ${match.teams?.join(' vs ') ?? 'TBD'}`,
       `Format: ${match.format ?? 'Bo3'}`,
       `Event: ${match.event ?? 'HLTV Event'}`,
-      `Score: ${match.score ?? 'TBD'}`,
-      `Date: ${match.date ?? 'Unknown time'}`
+      `Time: ${match.date ?? 'Unknown time'}`,
+      `Score: ${match.score ?? 'TBD'}`
     ].join('\n');
-    const openMatchNode = new HLTVNode('Open match page', 'link');
-    openMatchNode.command = {
-      command: 'vscode.open',
-      title: 'Open HLTV Match',
-      arguments: [vscode.Uri.parse(match.url)]
-    };
-
-    node.children = [
-      new HLTVNode(`Teams: ${match.teams?.join(' vs ') ?? 'TBD'}`, 'detail'),
-      new HLTVNode(`Format: ${match.format ?? 'Bo3'}`, 'detail'),
-      new HLTVNode(`Event: ${match.event ?? 'HLTV Event'}`, 'detail'),
-      new HLTVNode(`Date: ${match.date ?? 'Unknown time'}`, 'detail'),
-      new HLTVNode(`Score: ${match.score ?? 'TBD'}`, 'detail'),
-      openMatchNode
-    ];
     node.collapsibleState = vscode.TreeItemCollapsibleState.Collapsed;
-    groups[match.phase].push(node);
+    groups[phase].push(node);
   }
 
   return [
-    new HLTVNode('Past matches', 'section'),
-    ...groups.past,
-    new HLTVNode('Live matches', 'section'),
     ...groups.live,
-    new HLTVNode('Upcoming matches', 'section'),
     ...groups.upcoming
   ];
+}
+
+function buildMatchDetailNodes(detail: { teams: [string, string]; date?: string; event?: string; format?: string; phase?: string; score?: string; liveScore?: string; mapResults?: Array<{ map: string; score: string; summary?: string }> } | null, label: string, url: string): HLTVNode[] {
+  const nodes: HLTVNode[] = [];
+  const teams = detail?.teams ?? ['Team A', 'Team B'];
+
+  nodes.push(new HLTVNode(`Teams: ${teams[0]} vs ${teams[1]}`, 'detail'));
+  if (detail?.date) {
+    nodes.push(new HLTVNode(`Time: ${detail.date}`, 'detail'));
+  }
+  if (detail?.event) {
+    nodes.push(new HLTVNode(`Event: ${detail.event}`, 'detail'));
+  }
+  if (detail?.format) {
+    nodes.push(new HLTVNode(`Format: ${detail.format}`, 'detail'));
+  }
+  if (detail?.phase) {
+    nodes.push(new HLTVNode(`Phase: ${detail.phase}`, 'detail'));
+  }
+  if (detail?.liveScore) {
+    nodes.push(new HLTVNode(`Live score: ${detail.liveScore}`, 'detail'));
+  }
+  if (detail?.score) {
+    nodes.push(new HLTVNode(`Summary: ${detail.score}`, 'detail'));
+  }
+  if (detail?.mapResults && detail.mapResults.length > 0) {
+    for (const mapResult of detail.mapResults) {
+      nodes.push(new HLTVNode(`${mapResult.map}: ${mapResult.score}${mapResult.summary ? ` • ${mapResult.summary}` : ''}`, 'detail'));
+    }
+  }
+
+  const openMatchNode = new HLTVNode('Open match page', 'link');
+  openMatchNode.command = {
+    command: 'vscode.open',
+    title: 'Open HLTV Match',
+    arguments: [vscode.Uri.parse(url)]
+  };
+  nodes.push(openMatchNode);
+
+  return nodes.length > 0 ? nodes : [new HLTVNode(`Match details for ${label}`, 'detail')];
 }
 
 function buildNewsNodes(news: NewsSummary[]): HLTVNode[] {
@@ -112,15 +155,14 @@ function buildNewsNodes(news: NewsSummary[]): HLTVNode[] {
   }
 
   return [
-    new HLTVNode('Headlines', 'section'),
     ...groups.headline,
-    new HLTVNode('Flash updates', 'section'),
     ...groups.flash
   ];
 }
 
 export class HLTVNode extends vscode.TreeItem {
   children?: HLTVNode[];
+  matchUrl?: string;
 
   constructor(label: string, public readonly kind: 'section' | 'match' | 'news' | 'detail' | 'link' | 'message') {
     super(label, kind === 'section' || kind === 'match' ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
