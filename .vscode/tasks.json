@@ -2,21 +2,57 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "npm: compile",
-      "type": "shell",
-      "command": "bash",
-      "args": [
-        "-lc",
-        "export NVM_DIR=\"$HOME/.nvm\" && . \"$NVM_DIR/nvm.sh\" && cd \"${workspaceFolder}\" && npm run compile"
+      "label": "watch",
+      "dependsOn": [
+        "npm: watch:tsc",
+        "npm: watch:esbuild"
       ],
-      "options": {
-        "cwd": "${workspaceFolder}"
+      "presentation": {
+        "reveal": "never",
+        "panel": "dedicated",
+        "clear": true
       },
       "group": {
         "kind": "build",
         "isDefault": true
+      }
+    },
+    {
+      "type": "npm",
+      "script": "watch:esbuild",
+      "group": "build",
+      "problemMatcher": "$esbuild-watch",
+      "isBackground": true,
+      "label": "npm: watch:esbuild",
+      "presentation": {
+        "group": "watch",
+        "reveal": "never"
+      }
+    },
+    {
+      "type": "npm",
+      "script": "watch:tsc",
+      "group": "build",
+      "problemMatcher": "$tsc-watch",
+      "isBackground": true,
+      "label": "npm: watch:tsc",
+      "presentation": {
+        "group": "watch",
+        "reveal": "never"
+      }
+    },
+    {
+      "label": "package",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "-lc",
+        "export NVM_DIR=\"$HOME/.nvm\" && . \"$NVM_DIR/nvm.sh\" && cd \"${workspaceFolder}\" && npx vsce package --no-dependencies --allow-missing-repository"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
       },
-      "problemMatcher": "$tsc",
+      "group": "build",
       "presentation": {
         "reveal": "always",
         "panel": "shared",

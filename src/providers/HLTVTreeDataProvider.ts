@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
-import { fetchMatchDetail, fetchMatches, fetchNews, type MatchSummary, type NewsSummary } from '../services/hltvClient';
+import { fetchMatchDetail, fetchMatches, fetchNews, fetchResults, type MatchSummary, type NewsSummary } from '../services/hltvClient';
 
-export type HLTVViewKind = 'matches' | 'news';
+export type HLTVViewKind = 'matches' | 'results' | 'news';
 
 export class HLTVTreeDataProvider implements vscode.TreeDataProvider<HLTVNode> {
   private readonly _onDidChangeTreeData = new vscode.EventEmitter<HLTVNode | undefined | null | void>();
@@ -16,15 +16,22 @@ export class HLTVTreeDataProvider implements vscode.TreeDataProvider<HLTVNode> {
       if (this.viewKind === 'matches') {
         const matches = await fetchMatches(progress);
         this.items = buildMatchNodes(matches);
+      } else if (this.viewKind === 'results') {
+        const results = await fetchResults(progress);
+        this.items = buildMatchNodes(results);
       } else {
         const news = await fetchNews(progress);
         this.items = buildNewsNodes(news);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to load HLTV data.';
-      this.items = this.viewKind === 'matches'
-        ? [new HLTVNode(`Matches unavailable: ${message}`, 'message')]
-        : [new HLTVNode(`News unavailable: ${message}`, 'message')];
+      if (this.viewKind === 'matches') {
+        this.items = [new HLTVNode(`Matches unavailable: ${message}`, 'message')];
+      } else if (this.viewKind === 'results') {
+        this.items = [new HLTVNode(`Results unavailable: ${message}`, 'message')];
+      } else {
+        this.items = [new HLTVNode(`News unavailable: ${message}`, 'message')];
+      }
       void vscode.window.showWarningMessage(message);
     }
 
@@ -92,13 +99,30 @@ function buildMatchNodes(matches: MatchSummary[]): HLTVNode[] {
 
   return [
     ...groups.live,
-    ...groups.upcoming
+    ...groups.upcoming,
+    ...groups.past
   ];
 }
 
-function buildMatchDetailNodes(detail: { teams: [string, string]; date?: string; event?: string; format?: string; phase?: string; score?: string; liveScore?: string; mapResults?: Array<{ map: string; score: string; summary?: string }> } | null, label: string, url: string): HLTVNode[] {
+function formatPlayerStatRow(player: { name: string; team?: string; kd?: string; roundSwing?: string; adr?: string; kast?: string; rating?: string }): string {
+  const statParts = [
+    player.kd ? `K/D ${player.kd}` : undefined,
+    player.roundSwing ? `Swing ${player.roundSwing}` : undefined,
+    player.adr ? `ADR ${player.adr}` : undefined,
+    player.kast ? `KAST ${player.kast}` : undefined,
+    player.rating ? `Rating ${player.rating}` : undefined
+  ].filter((part): part is string => Boolean(part));
+
+  const label = `${player.name}${player.team ? ` (${player.team})` : ''}`;
+  return statParts.length > 0 ? `${label} • ${statParts.join(' • ')}` : label;
+}
+
+function buildMatchDetailNodes(detail: { teams: [string, string]; date?: string; event?: string; format?: string; phase?: string; score?: string; liveScore?: string; mapResults?: Array<{ map: string; score: string; summary?: string }>; playerStats?: Array<{ name: string; team?: string; kd?: string; roundSwing?: string; adr?: string; kast?: string; rating?: string }>; playerStatsBySection?: Array<{ section: string; players: Array<{ name: string; team?: string; kd?: string; roundSwing?: string; adr?: string; kast?: string; rating?: string }> }> } | null, label: string, url: string): HLTVNode[] {
   const nodes: HLTVNode[] = [];
   const teams = detail?.teams ?? ['Team A', 'Team B'];
+  const sections = detail?.playerStatsBySection && detail.playerStatsBySection.length > 0
+    ? detail.playerStatsBySection
+    : (detail?.playerStats && detail.playerStats.length > 0 ? [{ section: 'Summary', players: detail.playerStats }] : []);
 
   nodes.push(new HLTVNode(`Teams: ${teams[0]} vs ${teams[1]}`, 'detail'));
   if (detail?.date) {
@@ -116,12 +140,31 @@ function buildMatchDetailNodes(detail: { teams: [string, string]; date?: string;
   if (detail?.liveScore) {
     nodes.push(new HLTVNode(`Live score: ${detail.liveScore}`, 'detail'));
   }
+
+  const matchResultNode = (title: string, players: Array<{ name: string; team?: string; kd?: string; roundSwing?: string; adr?: string; kast?: string; rating?: string }> = [], sectionName?: string): HLTVNode => {
+    const node = new HLTVNode(title, 'detail');
+    node.command = {
+      command: 'hltv.showMatchStatsTable',
+      title: `Show live scoreboard for ${title}`,
+      arguments: [detail, sectionName ?? title, players]
+    };
+    return node;
+  };
+
   if (detail?.score) {
-    nodes.push(new HLTVNode(`Summary: ${detail.score}`, 'detail'));
+    const summaryPlayers = sections.find((section) => /^summary$/i.test(section.section.trim()))?.players ?? sections[0]?.players ?? [];
+    nodes.push(matchResultNode(`Summary: ${detail.score}`, summaryPlayers, 'Summary'));
   }
+
   if (detail?.mapResults && detail.mapResults.length > 0) {
     for (const mapResult of detail.mapResults) {
-      nodes.push(new HLTVNode(`${mapResult.map}: ${mapResult.score}${mapResult.summary ? ` • ${mapResult.summary}` : ''}`, 'detail'));
+      const labelText = `${mapResult.map}: ${mapResult.score}${mapResult.summary ? ` • ${mapResult.summary}` : ''}`;
+      const matchingSection = sections.find((section) => {
+        const normalized = section.section.trim().toLowerCase();
+        return normalized.includes(mapResult.map.toLowerCase()) || normalized.includes(mapResult.map.toLowerCase().replace(/\s+/g, ''));
+      });
+      const players = matchingSection?.players ?? sections.find((section) => /^summary$/i.test(section.section.trim()))?.players ?? [];
+      nodes.push(matchResultNode(labelText, players, `${mapResult.map}: ${mapResult.score}`));
     }
   }
 
@@ -144,11 +187,11 @@ function buildNewsNodes(news: NewsSummary[]): HLTVNode[] {
 
   for (const item of news) {
     const articleNode = new HLTVNode(`${item.title} · ${item.publishedAt}`, 'news');
-    articleNode.tooltip = item.content ?? item.title;
+    articleNode.tooltip = item.title;
     articleNode.command = {
-      command: 'vscode.open',
+      command: 'hltv.openNewsArticle',
       title: 'Open HLTV article',
-      arguments: [vscode.Uri.parse(item.url)]
+      arguments: [item]
     };
     articleNode.collapsibleState = vscode.TreeItemCollapsibleState.None;
     groups[item.level].push(articleNode);
