@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
-import { fetchMatchDetail, fetchMatches, fetchNews, type MatchSummary, type NewsSummary } from '../services/hltvClient';
+import { fetchMatchDetail, fetchMatches, fetchNews, fetchResults, type MatchSummary, type NewsSummary } from '../services/hltvClient';
 
-export type HLTVViewKind = 'matches' | 'news';
+export type HLTVViewKind = 'matches' | 'results' | 'news';
 
 export class HLTVTreeDataProvider implements vscode.TreeDataProvider<HLTVNode> {
   private readonly _onDidChangeTreeData = new vscode.EventEmitter<HLTVNode | undefined | null | void>();
@@ -16,15 +16,22 @@ export class HLTVTreeDataProvider implements vscode.TreeDataProvider<HLTVNode> {
       if (this.viewKind === 'matches') {
         const matches = await fetchMatches(progress);
         this.items = buildMatchNodes(matches);
+      } else if (this.viewKind === 'results') {
+        const results = await fetchResults(progress);
+        this.items = buildMatchNodes(results);
       } else {
         const news = await fetchNews(progress);
         this.items = buildNewsNodes(news);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to load HLTV data.';
-      this.items = this.viewKind === 'matches'
-        ? [new HLTVNode(`Matches unavailable: ${message}`, 'message')]
-        : [new HLTVNode(`News unavailable: ${message}`, 'message')];
+      if (this.viewKind === 'matches') {
+        this.items = [new HLTVNode(`Matches unavailable: ${message}`, 'message')];
+      } else if (this.viewKind === 'results') {
+        this.items = [new HLTVNode(`Results unavailable: ${message}`, 'message')];
+      } else {
+        this.items = [new HLTVNode(`News unavailable: ${message}`, 'message')];
+      }
       void vscode.window.showWarningMessage(message);
     }
 
@@ -92,7 +99,8 @@ function buildMatchNodes(matches: MatchSummary[]): HLTVNode[] {
 
   return [
     ...groups.live,
-    ...groups.upcoming
+    ...groups.upcoming,
+    ...groups.past
   ];
 }
 

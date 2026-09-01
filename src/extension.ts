@@ -14,7 +14,7 @@ function getNewsCopyText(article: unknown): string {
   return '';
 }
 
-async function refreshAll(matchesProvider: HLTVTreeDataProvider, newsProvider: HLTVTreeDataProvider): Promise<void> {
+async function refreshAll(matchesProvider: HLTVTreeDataProvider, resultsProvider: HLTVTreeDataProvider, newsProvider: HLTVTreeDataProvider): Promise<void> {
   await vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,
@@ -24,7 +24,11 @@ async function refreshAll(matchesProvider: HLTVTreeDataProvider, newsProvider: H
     async (progress) => {
       progress.report({ message: 'Loading (Matches)', increment: 0 });
       await matchesProvider.refresh();
-      progress.report({ message: 'Loading (Matches)', increment: 50 });
+      progress.report({ message: 'Loading (Matches)', increment: 25 });
+
+      progress.report({ message: 'Loading (Results)', increment: 0 });
+      await resultsProvider.refresh();
+      progress.report({ message: 'Loading (Results)', increment: 25 });
 
       await newsProvider.refresh((message, current, total) => {
         const label = message || `Loading (News ${current} / ${total})`;
@@ -40,10 +44,16 @@ async function refreshAll(matchesProvider: HLTVTreeDataProvider, newsProvider: H
 
 export function activate(context: vscode.ExtensionContext): void {
   const matchesProvider = new HLTVTreeDataProvider('matches');
+  const resultsProvider = new HLTVTreeDataProvider('results');
   const newsProvider = new HLTVTreeDataProvider('news');
 
   const matchesView = vscode.window.createTreeView('hltv.matches', {
     treeDataProvider: matchesProvider,
+    showCollapseAll: true
+  });
+
+  const resultsView = vscode.window.createTreeView('hltv.results', {
+    treeDataProvider: resultsProvider,
     showCollapseAll: true
   });
 
@@ -63,11 +73,11 @@ export function activate(context: vscode.ExtensionContext): void {
   });
 
   const refreshCommand = vscode.commands.registerCommand('hltv.refresh', async () => {
-    await refreshAll(matchesProvider, newsProvider);
+    await refreshAll(matchesProvider, resultsProvider, newsProvider);
   });
 
-  context.subscriptions.push(matchesView, newsView, refreshCommand, copyNewsCommand);
-  void refreshAll(matchesProvider, newsProvider);
+  context.subscriptions.push(matchesView, resultsView, newsView, refreshCommand, copyNewsCommand);
+  void refreshAll(matchesProvider, resultsProvider, newsProvider);
 }
 
 export function deactivate(): void {

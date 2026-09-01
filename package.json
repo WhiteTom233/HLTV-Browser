@@ -12,6 +12,7 @@
   "main": "./dist/extension.js",
   "activationEvents": [
     "onView:hltv.matches",
+    "onView:hltv.results",
     "onView:hltv.news",
     "onCommand:hltv.refresh"
   ],
@@ -30,6 +31,11 @@
         {
           "id": "hltv.matches",
           "name": "Matches",
+          "icon": "resources/icon.svg"
+        },
+        {
+          "id": "hltv.results",
+          "name": "Results",
           "icon": "resources/icon.svg"
         },
         {
@@ -53,7 +59,7 @@
       "view/title": [
         {
           "command": "hltv.refresh",
-          "when": "view == hltv.matches || view == hltv.news",
+          "when": "view == hltv.matches || view == hltv.results || view == hltv.news",
           "group": "navigation",
           "position": "before"
         }

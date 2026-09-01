@@ -249,6 +249,52 @@ function buildNewsLabel(values: string[], href?: string): string {
   return cleaned[0] ?? 'HLTV News';
 }
 
+function readTeamNameFromMatchLink(link: Element, side: 'team1' | 'team2'): string | null {
+  const selectors = [
+    `.match-team.${side} .match-teamname`,
+    `.line-align.${side} .team`,
+    `.${side} .team`,
+    `.${side} .teamName`,
+    `.${side} .match-teamname`
+  ];
+
+  for (const selector of selectors) {
+    const element = link.querySelector(selector);
+    const value = normalizeText(element?.textContent ?? '');
+    if (value) {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+function extractTeamNamesFromMatchLink(link: Element): [string, string] | null {
+  const team1 = readTeamNameFromMatchLink(link, 'team1');
+  const team2 = readTeamNameFromMatchLink(link, 'team2');
+
+  if (team1 && team2) {
+    return [team1, team2] as [string, string];
+  }
+
+  if (team1 || team2) {
+    const combinedText = normalizeText(link.textContent ?? '');
+    const teamCandidates = splitCompactTeamNames(combinedText);
+    if (teamCandidates.length >= 2) {
+      return [teamCandidates[0], teamCandidates[1]] as [string, string];
+    }
+    return [team1 ?? team2 ?? 'Team A', team2 ?? team1 ?? 'Team B'] as [string, string];
+  }
+
+  const combinedText = normalizeText(link.textContent ?? '');
+  const teamCandidates = splitCompactTeamNames(combinedText);
+  if (teamCandidates.length >= 2) {
+    return [teamCandidates[0], teamCandidates[1]] as [string, string];
+  }
+
+  return null;
+}
+
 function pickTeamNamesFromPage(page: Page): Promise<[string, string]> {
   return page.evaluate(() => {
     const normalizeText = (value: string): string => value.replace(/\s+/g, ' ').replace(/\u00a0/g, ' ').trim();
@@ -600,7 +646,7 @@ export async function fetchMatches(progress?: (message: string, current: number,
         return cleaned.slice(0, 3).join(' · ');
       };
 
-      const byHref = new Map<string, Set<string>>();
+      const byHref = new Map<string, { texts: Set<string>; teams: [string, string] | null }>();
 
       for (const link of Array.from(document.querySelectorAll('a.match-top, a.match-info, a.match-teams, a.match-team-livescore'))) {
         const href = (link as HTMLAnchorElement).href;
@@ -609,20 +655,25 @@ export async function fetchMatches(progress?: (message: string, current: number,
           continue;
         }
 
-        const entry = byHref.get(href) ?? new Set<string>();
-        entry.add(text);
-        byHref.set(href, entry);
+        const existing = byHref.get(href) ?? { texts: new Set<string>(), teams: null };
+        existing.texts.add(text);
+        const extractedTeams = extractTeamNamesFromMatchLink(link);
+        if (extractedTeams) {
+          existing.teams = extractedTeams;
+        }
+        byHref.set(href, existing);
       }
 
       return Array.from(byHref.entries())
-        .map(([href, texts]) => ({
+        .map(([href, payload]) => ({
           href,
-          values: Array.from(texts).filter((value) => value.length > 0)
+          values: Array.from(payload.texts).filter((value) => value.length > 0),
+          teams: payload.teams
         }))
         .filter(({ values }) => values.some((value) => value.length > 6))
         .slice(0, 12)
-        .map(({ href, values }) => {
-          const label = buildMatchLabel(href, values);
+        .map(({ href, values, teams }) => {
+          const label = teams ? `${teams[0]} vs ${teams[1]}` : buildMatchLabel(href, values);
           const scoreText = values.find((value) => /\d+\s*\(\d+\)\s*\d+\s*\(\d+\)/i.test(value) || /\d+\s*:\s*\d+/.test(value));
           const phaseHint = values.some((value) => /live/i.test(value)) ? 'live' : scoreText ? 'live' : 'past';
           const format = values.find((value) => /^bo\d+$/i.test(normalizeText(value))) ?? 'Bo3';
@@ -647,16 +698,16 @@ export async function fetchMatches(progress?: (message: string, current: number,
             .filter((value) => value && value.length > 2 && !/^bo\d+$/i.test(value) && !/^live$/i.test(value) && !/^\d+\s*\(\d+\)\s*\d+\s*\(\d+\)$/i.test(value))
             .filter((value, index, arr) => arr.indexOf(value) === index)
             .filter((value) => !isEventLikeValue(value));
-          const teams: [string, string] = teamCandidates.length >= 2
+          const resolvedTeams: [string, string] = teams ?? (teamCandidates.length >= 2
             ? [teamCandidates[0], teamCandidates[1]]
-            : ['Team A', 'Team B'];
+            : ['Team A', 'Team B']);
           const event = values.find((value) => /qualifier|league|cup|blast|esl|fissure|clutch|series|open|invite|season/i.test(value)) ?? 'HLTV Event';
           return {
             href,
             title: label,
             metadata: scoreText ?? 'Match info',
             phase: phaseHint,
-            teams,
+            teams: resolvedTeams,
             format,
             event,
             score: scoreText ?? 'TBD'
@@ -674,6 +725,137 @@ export async function fetchMatches(progress?: (message: string, current: number,
       phase: 'upcoming',
       metadata: 'HLTV has no visible match rows in the current page state.',
       url: `${HLTV_BASE_URL}/matches`
+    }];
+  }
+
+  return items.map((item, index) => ({
+    id: slugify(`${item.href}-${index}`),
+    title: item.title,
+    phase: item.phase as MatchSummary['phase'],
+    metadata: item.metadata,
+    url: item.href.startsWith('http') ? item.href : `${HLTV_BASE_URL}${item.href}`,
+    teams: item.teams,
+    format: item.format,
+    event: item.event,
+    score: item.score
+  }));
+}
+
+export async function fetchResults(progress?: (message: string, current: number, total: number) => void): Promise<MatchSummary[]> {
+  progress?.('results…', 1, 1);
+
+  const items = await withPage(`${HLTV_BASE_URL}/results`, async (page) => {
+    return await page.$$eval('a[href*="/matches/"]', (links) => {
+      const normalizeText = (value: string): string => value.replace(/\s+/g, ' ').replace(/\u00a0/g, ' ').trim();
+      const cleanTitleText = (value: string): string => normalizeText(value)
+        .replace(/([a-z])(?=(?:an?|\d+)\s*(?:seconds?|minutes?|hours?|days?)\s+ago)/gi, '$1 ')
+        .replace(/\s+\d+\s*comments?\b.*$/gi, '')
+        .replace(/\s+(?:an?|[0-9]+)\s*(?:seconds?|minutes?|hours?|days?)\s+ago.*$/gi, '')
+        .replace(/#\d+$/g, '')
+        .trim();
+
+      const parseResultScore = (value: string): string | undefined => {
+        const match = normalizeText(value).match(/(\d+)\s*-\s*(\d+)/i);
+        if (match) {
+          return `${match[1]}-${match[2]}`;
+        }
+        return undefined;
+      };
+
+      const resultEntries = new Map<string, { href: string; texts: Set<string>; teams: [string, string] | null; score?: string; event?: string; format?: string }>();
+
+      for (const link of Array.from(links)) {
+        const href = (link as HTMLAnchorElement).href;
+        const text = (link.textContent || '').trim();
+        if (!href || !text) {
+          continue;
+        }
+
+        const existing = resultEntries.get(href) ?? { href, texts: new Set<string>(), teams: null };
+        if (text) {
+          existing.texts.add(text);
+        }
+
+        const teamNames = (() => {
+          const first = link.querySelector('.line-align.team1 .team, .team1 .team, .match-team.team1 .match-teamname, .team1 .teamName');
+          const second = link.querySelector('.line-align.team2 .team, .team2 .team, .match-team.team2 .match-teamname, .team2 .teamName');
+          const teamA = normalizeText(first?.textContent ?? '');
+          const teamB = normalizeText(second?.textContent ?? '');
+          if (teamA && teamB) {
+            return [teamA, teamB] as [string, string];
+          }
+
+          const combined = normalizeText((link.textContent || '').replace(/\s+/g, ' '));
+          const compact = combined.replace(/[^A-Za-z0-9]/g, '');
+          if (!compact) {
+            return null;
+          }
+          const parts = compact.split(/vs/i); 
+          if (parts.length >= 2) {
+            return [normalizeText(parts[0]), normalizeText(parts[1])] as [string, string];
+          }
+          return null;
+        })();
+
+        if (teamNames) {
+          existing.teams = teamNames;
+        }
+
+        const scoreEl = link.querySelector('.result-score');
+        const scoreText = scoreEl ? normalizeText(scoreEl.textContent ?? '') : undefined;
+        if (scoreText) {
+          existing.score = parseResultScore(scoreText) ?? scoreText;
+        }
+
+        const eventEl = link.querySelector('.event-name, .match-event .text-ellipsis, .event');
+        const eventText = normalizeText(eventEl?.textContent ?? '');
+        if (eventText) {
+          existing.event = eventText;
+        }
+
+        const mapEl = link.querySelector('.map, .map-text');
+        const formatText = normalizeText(mapEl?.textContent ?? '');
+        if (formatText) {
+          existing.format = formatText;
+        }
+
+        resultEntries.set(href, existing);
+      }
+
+      return Array.from(resultEntries.values())
+        .filter((entry) => entry.href && entry.texts.size > 0)
+        .slice(0, 12)
+        .map((entry) => {
+          const label = entry.teams ? `${entry.teams[0]} vs ${entry.teams[1]}` : Array.from(entry.texts)
+            .map((value) => cleanTitleText(value))
+            .filter((value) => value && value.length > 3)
+            .find((value) => !/^bo\d+$/i.test(value)) ?? 'HLTV Result';
+          const score = entry.score ?? Array.from(entry.texts).find((value) => /\d+\s*-\s*\d+/.test(value)) ?? 'TBD';
+          const event = entry.event ?? Array.from(entry.texts).find((value) => /qualifier|league|cup|blast|esl|fissure|clutch|series|open|invite|season/i.test(value)) ?? 'HLTV Event';
+          const format = entry.format ?? Array.from(entry.texts).find((value) => /^bo\d+$/i.test(normalizeText(value))) ?? 'Bo3';
+          return {
+            href: entry.href,
+            title: label,
+            metadata: score,
+            phase: 'past' as const,
+            teams: entry.teams ?? ['Team A', 'Team B'],
+            format,
+            event,
+            score
+          };
+        });
+    });
+  });
+
+  progress?.('Results loaded', 1, 1);
+
+  if (!items.length) {
+    return [{
+      id: 'results-placeholder',
+      title: 'No results parsed yet',
+      phase: 'past',
+      metadata: 'HLTV returned no result rows in the current page state.',
+      url: `${HLTV_BASE_URL}/results`
     }];
   }
 
