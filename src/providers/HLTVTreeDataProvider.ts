@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
-import { fetchMatchDetail, fetchMatches, fetchNews, fetchResults, type MatchSummary, type NewsSummary } from '../services/hltvClient';
+import { fetchEventDetail, fetchEvents, fetchMatchDetail, fetchMatches, fetchNews, fetchResults, type EventSummary, type MatchSummary, type NewsSummary } from '../services/hltvClient';
 
-export type HLTVViewKind = 'matches' | 'results' | 'news';
+export type HLTVViewKind = 'matches' | 'results' | 'events' | 'news';
 
 export class HLTVTreeDataProvider implements vscode.TreeDataProvider<HLTVNode> {
   private readonly _onDidChangeTreeData = new vscode.EventEmitter<HLTVNode | undefined | null | void>();
@@ -19,6 +19,9 @@ export class HLTVTreeDataProvider implements vscode.TreeDataProvider<HLTVNode> {
       } else if (this.viewKind === 'results') {
         const results = await fetchResults(progress);
         this.items = buildMatchNodes(results);
+      } else if (this.viewKind === 'events') {
+        const events = await fetchEvents(progress);
+        this.items = buildEventNodes(events);
       } else {
         const news = await fetchNews(progress);
         this.items = buildNewsNodes(news);
@@ -29,6 +32,8 @@ export class HLTVTreeDataProvider implements vscode.TreeDataProvider<HLTVNode> {
         this.items = [new HLTVNode(`Matches unavailable: ${message}`, 'message')];
       } else if (this.viewKind === 'results') {
         this.items = [new HLTVNode(`Results unavailable: ${message}`, 'message')];
+      } else if (this.viewKind === 'events') {
+        this.items = [new HLTVNode(`Events unavailable: ${message}`, 'message')];
       } else {
         this.items = [new HLTVNode(`News unavailable: ${message}`, 'message')];
       }
@@ -60,6 +65,24 @@ export class HLTVTreeDataProvider implements vscode.TreeDataProvider<HLTVNode> {
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unable to load match details.';
         element.children = [new HLTVNode(`Match detail unavailable: ${message}`, 'detail')];
+        return element.children;
+      }
+    }
+
+    if (element.kind === 'event') {
+      if (element.children && element.children.length > 0) {
+        return element.children;
+      }
+      if (!element.eventUrl) {
+        return [];
+      }
+      try {
+        const detail = await fetchEventDetail(element.eventUrl);
+        element.children = buildEventDetailNodes(detail, element.label as string, element.eventUrl);
+        return element.children;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unable to load event details.';
+        element.children = [new HLTVNode(`Event detail unavailable: ${message}`, 'detail')];
         return element.children;
       }
     }
@@ -179,6 +202,66 @@ function buildMatchDetailNodes(detail: { teams: [string, string]; date?: string;
   return nodes.length > 0 ? nodes : [new HLTVNode(`Match details for ${label}`, 'detail')];
 }
 
+function buildEventNodes(events: EventSummary[]): HLTVNode[] {
+  return events.map((event) => {
+    const node = new HLTVNode(event.name, 'event');
+    node.eventUrl = event.url;
+    node.description = event.status;
+    node.tooltip = [
+      `Date: ${event.date ?? 'Unknown'}`,
+      `Prize pool: ${event.prizePool ?? 'Unknown'}`,
+      `Teams: ${typeof event.teams === 'number' ? event.teams : 'Unknown'}`,
+      `Location: ${event.location ?? 'Unknown'}`
+    ].join('\n');
+    node.command = {
+      command: 'hltv.openEventDetail',
+      title: `Open ${event.name}`,
+      arguments: [event]
+    };
+    node.collapsibleState = vscode.TreeItemCollapsibleState.None;
+    return node;
+  });
+}
+
+function buildEventDetailNodes(detail: EventSummary | null | undefined, label: string, url: string): HLTVNode[] {
+  const nodes: HLTVNode[] = [];
+  if (!detail) {
+    return [new HLTVNode(`Event details for ${label}`, 'detail')];
+  }
+
+  if (detail.date) {
+    nodes.push(new HLTVNode(`Date: ${detail.date}`, 'detail'));
+  }
+  if (detail.prizePool) {
+    nodes.push(new HLTVNode(`Prize pool: ${detail.prizePool}`, 'detail'));
+  }
+  if (typeof detail.teams === 'number') {
+    nodes.push(new HLTVNode(`Teams: ${detail.teams}`, 'detail'));
+  }
+  if (detail.location) {
+    nodes.push(new HLTVNode(`Location: ${detail.location}`, 'detail'));
+  }
+  if (detail.currentStage) {
+    nodes.push(new HLTVNode(`Current stage: ${detail.currentStage}`, 'detail'));
+  }
+  if (detail.matches && detail.matches.length > 0) {
+    nodes.push(new HLTVNode(`Matches: ${detail.matches.slice(0, 3).join(' • ')}`, 'detail'));
+  }
+  if (detail.standings && detail.standings.length > 0) {
+    nodes.push(new HLTVNode(`Standings: ${detail.standings.slice(0, 3).map((entry) => `${entry.position} (${entry.reward})`).join(' • ')}`, 'detail'));
+  }
+
+  const openEventNode = new HLTVNode('Open event page', 'link');
+  openEventNode.command = {
+    command: 'vscode.open',
+    title: 'Open HLTV Event',
+    arguments: [vscode.Uri.parse(url)]
+  };
+  nodes.push(openEventNode);
+
+  return nodes.length > 0 ? nodes : [new HLTVNode(`Event details for ${label}`, 'detail')];
+}
+
 function buildNewsNodes(news: NewsSummary[]): HLTVNode[] {
   const groups: Record<'headline' | 'flash', HLTVNode[]> = {
     headline: [],
@@ -206,10 +289,11 @@ function buildNewsNodes(news: NewsSummary[]): HLTVNode[] {
 export class HLTVNode extends vscode.TreeItem {
   children?: HLTVNode[];
   matchUrl?: string;
+  eventUrl?: string;
 
-  constructor(label: string, public readonly kind: 'section' | 'match' | 'news' | 'detail' | 'link' | 'message') {
-    super(label, kind === 'section' || kind === 'match' ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
-    this.description = kind === 'section' ? 'group' : kind === 'message' ? 'status' : kind === 'detail' ? 'detail' : kind === 'link' ? 'open' : 'match';
+  constructor(label: string, public readonly kind: 'section' | 'match' | 'event' | 'news' | 'detail' | 'link' | 'message') {
+    super(label, kind === 'section' || kind === 'match' || kind === 'event' ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
+    this.description = kind === 'section' ? 'group' : kind === 'message' ? 'status' : kind === 'detail' ? 'detail' : kind === 'link' ? 'open' : kind === 'event' ? 'event' : 'match';
     this.contextValue = kind;
   }
 }

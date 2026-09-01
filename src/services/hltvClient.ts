@@ -55,13 +55,54 @@ export interface NewsSummary {
   contentHtml?: string;
 }
 
+export interface EventPrizeDistribution {
+  placement: string;
+  team?: string;
+  amount?: string;
+  clubShare?: string;
+}
+
+export interface EventBracketMatch {
+  round: string;
+  team1?: string;
+  team2?: string;
+  score?: string;
+  status?: string;
+  matchUrl?: string;
+  time?: string;
+  format?: string;
+}
+
+export interface EventBracketRound {
+  stage?: string;
+  round: string;
+  matches: EventBracketMatch[];
+}
+
+export interface EventSummary {
+  id: string;
+  name: string;
+  url: string;
+  status: 'live' | 'upcoming' | 'past';
+  date?: string;
+  prizePool?: string;
+  teams?: number;
+  location?: string;
+  currentStage?: string;
+  matches?: string[];
+  standings?: Array<{ position: string; reward: string }>;
+  prizeDistribution?: EventPrizeDistribution[];
+  bracket?: EventBracketRound[];
+  media?: string[];
+}
+
 export async function fetchNewsArticle(newsUrl: string): Promise<NewsSummary> {
   const url = newsUrl.startsWith('http') ? newsUrl : `${HLTV_BASE_URL}${newsUrl}`;
 
   return await withPage(url, async (articlePage) => {
-    await articlePage.waitForTimeout(500);
+    // await articlePage.waitForTimeout(500);
     const info = await articlePage.evaluate(() => {
-      const normalizeText = (value: string): string => value.replace(/\s+/g, ' ').replace(/\u00a0/g, ' ').trim();
+      const normalizeText = (value: unknown): string => String(value ?? '').replace(/\s+/g, ' ').replace(/\u00a0/g, ' ').trim();
       const keepSelector = [
         'p', 'li', 'ul', 'ol', 'h2', 'h3', 'h4', 'table', 'thead', 'tbody', 'tr', 'th', 'td',
         'a', 'span', 'img', 'picture',
@@ -112,8 +153,8 @@ export async function fetchNewsArticle(newsUrl: string): Promise<NewsSummary> {
 
 const HLTV_BASE_URL = 'https://www.hltv.org';
 
-function normalizeText(value: string): string {
-  return value.replace(/\s+/g, ' ').replace(/\u00a0/g, ' ').trim();
+function normalizeText(value: unknown): string {
+  return String(value ?? '').replace(/\s+/g, ' ').replace(/\u00a0/g, ' ').trim();
 }
 
 function slugify(value: string): string {
@@ -122,6 +163,71 @@ function slugify(value: string): string {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 80) || 'hltv-item';
+}
+
+function cleanEventTitle(value: string): string {
+  const normalized = normalizeText(value)
+    .replace(/\s*\|\s*HLTV\.org\s*$/i, '')
+    .replace(/^\s*LIVE\s+/i, '')
+    .replace(/\s+(?:overview|results|bracket|schedule|matches|standings)\s*$/i, '')
+    .replace(/\s*(?:LAN|Online)\s*(?:[-–]\s*)?(?:[A-Z][a-z]{2,}\s+\d{1,2}(?:st|nd|rd|th)?(?:\s*[-–]\s*[A-Z][a-z]{2,}\s+\d{1,2}(?:st|nd|rd|th)?(?:,\s*\d{4})?)?)\s*$/i, '')
+    .replace(/\s*(?:LAN|Online)\s*(?:[-–]\s*)?\d{4}\s*$/i, '')
+    .replace(/\s*(?:LAN|Online)\s*(?:[-–]\s*)?(?:[A-Z][a-z]{2,}\s+\d{1,2}(?:st|nd|rd|th)?(?:\s*[-–]\s*[A-Z][a-z]{2,}\s+\d{1,2}(?:st|nd|rd|th)?(?:,\s*\d{4})?)?)?\s*$/i, '')
+    .replace(/\s*(?:LAN|Online)\s*(?:[-–]\s*)?(?:[A-Z][a-z]{2,}\s+\d{1,2}(?:st|nd|rd|th)?(?:\s*[-–]\s*[A-Z][a-z]{2,}\s+\d{1,2}(?:st|nd|rd|th)?(?:,\s*\d{4})?)?)\s*$/i, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
+  return normalized || 'HLTV Event';
+}
+
+function formatBracketTime(timestampMs?: number): string | undefined {
+  if (!timestampMs || Number.isNaN(timestampMs)) {
+    return undefined;
+  }
+
+  const date = new Date(timestampMs);
+  if (Number.isNaN(date.getTime())) {
+    return undefined;
+  }
+
+  return date.toLocaleString('en-GB', {
+    timeZone: 'Asia/Shanghai',
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    timeZoneName: 'short'
+  }).replace(/\s+/g, ' ').trim();
+}
+
+function humanizeBracketRound(roundName: string): string {
+  const normalized = normalizeText(roundName)
+    .replace(/^.*\./, '')
+    .replace(/^Round\s+/i, '')
+    .replace(/[-_]+/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
+  const lower = normalized.toLowerCase();
+  if (/upper.*semi|semi.*upper/i.test(lower)) return 'Upper semi-finals';
+  if (/lower.*semi|semi.*lower/i.test(lower)) return 'Lower semi-finals';
+  if (/quarterfinal|quarter-final|round4|round-4|round 4|1\/4/i.test(lower)) return 'Quarter-finals';
+  if (/semifinal|semi-final|round2|round-2|round 2|1\/2/i.test(lower)) return 'Semi-finals';
+  if (/grandfinal|final|championship/i.test(lower) || /round1|round-1|round 1|1\/1/i.test(lower)) return 'Grand Final';
+  if (/round8|round-8|round 8|round of 16|1\/8|1\/16/i.test(lower)) return 'Round of 16';
+  if (/round16|round-16|round 16|1\/16/i.test(lower)) return 'Round of 16';
+  if (/round32|round-32|round 32|1\/32/i.test(lower)) return 'Round of 32';
+  if (/group/i.test(lower) || /stage/i.test(lower)) return 'Group Stage';
+  return normalized || 'Round';
+}
+
+function detectBracketTypeName(value?: string): string {
+  if (!value) return 'Bracket';
+  if (/singleelimination|playoff/i.test(value)) return 'Playoffs';
+  if (/doubleelimination|group.*stage|groupstage|group/i.test(value)) return 'Group Stage';
+  return 'Bracket';
 }
 
 function detectCloudflare(page: Page): Promise<boolean> {
@@ -390,7 +496,7 @@ function extractTeamNamesFromMatchLink(link: Element): [string, string] | null {
 
 function pickTeamNamesFromPage(page: Page): Promise<[string, string]> {
   return page.evaluate(() => {
-    const normalizeText = (value: string): string => value.replace(/\s+/g, ' ').replace(/\u00a0/g, ' ').trim();
+    const normalizeText = (value: unknown): string => String(value ?? '').replace(/\s+/g, ' ').replace(/\u00a0/g, ' ').trim();
     const names = Array.from(document.querySelectorAll('.teamName, .dropdownTeam'))
       .map((element) => normalizeText((element.textContent ?? '').replace(/\s+/, ' ')))
       .filter((value) => value && value.length > 1)
@@ -542,7 +648,7 @@ async function getPlayerStats(page: Page): Promise<MatchPlayerStat[]> {
 
 async function getPlayerStatsBySection(page: Page): Promise<Array<{ section: string; players: MatchPlayerStat[] }>> {
   return await page.evaluate(() => {
-    const normalizeText = (value: string): string => value.replace(/\s+/g, ' ').replace(/\u00a0/g, ' ').trim();
+    const normalizeText = (value: unknown): string => String(value ?? '').replace(/\s+/g, ' ').replace(/\u00a0/g, ' ').trim();
     const toPlayers = (table: Element): MatchPlayerStat[] => {
       const teamName = normalizeText(
         table.querySelector('tr.header-row td.players .teamName, tr.header-row td.players a, tr.header-row td.players')?.textContent ?? ''
@@ -833,12 +939,486 @@ export async function fetchMatchDetail(matchUrl: string): Promise<MatchDetail | 
   });
 }
 
+export async function fetchEvents(progress?: (message: string, current: number, total: number) => void): Promise<EventSummary[]> {
+  progress?.('events…', 1, 1);
+  const items = await withPage(`${HLTV_BASE_URL}/events`, async (page) => {
+    return await page.evaluate(() => {
+      const normalizeText = (value: unknown): string => String(value ?? '').replace(/\s+/g, ' ').replace(/\u00a0/g, ' ').trim();
+      const normalizeEventTitle = (value: string | number | null | undefined): string => normalizeText(value)
+        .replace(/^\s*LIVE\s+/i, '')
+        .replace(/\s+(?:overview|results|bracket|schedule|matches|standings)\s*$/i, '')
+        .replace(/\s*(?:LAN|Online)\s*(?:[-–]\s*)?(?:[A-Z][a-z]{2,}\s+\d{1,2}(?:st|nd|rd|th)?(?:\s*[-–]\s*[A-Z][a-z]{2,}\s+\d{1,2}(?:st|nd|rd|th)?(?:,\s*\d{4})?)?)\s*$/i, '')
+        .replace(/\s*(?:LAN|Online)\s*$/i, '')
+        .replace(/\s*\d{4}\s*(?:LAN|Online)\s*$/i, '')
+        .replace(/\s*\d{4}\s*(?:LAN|Online)\s*(?:[A-Z][a-z]{2,}\s+\d{1,2}(?:st|nd|rd|th)?(?:\s*[-–]\s*[A-Z][a-z]{2,}\s+\d{1,2}(?:st|nd|rd|th)?(?:,\s*\d{4})?)?)?\s*$/i, '')
+        .trim();
+
+      const readEventTitle = (link: Element): { title: string; isBig: boolean } => {
+        const bigNode = link.querySelector('.big-event-name');
+        const exactTitleNode = link.querySelector('.event-col.col-value > .text-ellipsis, .event-col .col-value > .text-ellipsis, .event-col .text-ellipsis');
+        const direct = exactTitleNode ?? link.querySelector('.big-event-name, .event-name, .event-title, .event-hub-title, .text-ellipsis, h1');
+        const text = normalizeText((direct?.textContent ?? link.textContent ?? '').replace(/\u00a0/g, ' '));
+        const title = normalizeEventTitle(text).replace(/^Live\s+/i, '').replace(/\s+Live$/i, '').trim();
+        return { title, isBig: Boolean(bigNode) || /big-event-name/i.test((link as HTMLElement).className || '') };
+      };
+      const seen = new Set<string>();
+      const candidates = Array.from(document.querySelectorAll('a[href*="/events/"]'))
+        .map((link) => {
+          const href = (link as HTMLAnchorElement).href;
+          const { title, isBig } = readEventTitle(link);
+          const parentText = normalizeText((link.closest('li, div, article, section, tr')?.textContent ?? ''));
+          return { href, text: title, isBig, parentText };
+        })
+        .filter(({ href, text, parentText }) => {
+          if (!href || text.length <= 3) {
+            return false;
+          }
+          const combined = `${text} ${parentText}`;
+          if (!/\/events\//i.test(href) || /\/events\/$/i.test(href) || /\/events(?:\/)?(?:archive|#|\?)/i.test(href)) {
+            return false;
+          }
+          if (/archive|played events|ongoing events|featured|today|all/i.test(combined)) {
+            return false;
+          }
+          return true;
+        });
+
+      return candidates
+        .filter(({ href, text, parentText }) => {
+          const key = `${href}::${text}::${parentText}`;
+          if (seen.has(key)) {
+            return false;
+          }
+          seen.add(key);
+          return true;
+        })
+        .slice(0, 18)
+        .map(({ href, text, parentText, isBig }) => {
+          const combined = `${text} ${parentText}`;
+          const title = normalizeEventTitle(text) || 'HLTV Event';
+          const name = isBig ? `[BIG] ${title}` : title;
+          const status: EventSummary['status'] = /live/i.test(combined) ? 'live' : 'upcoming';
+          return {
+            id: href,
+            name,
+            url: href,
+            status,
+            date: undefined,
+            prizePool: undefined,
+            teams: undefined,
+            location: undefined,
+            currentStage: undefined,
+            matches: undefined,
+            standings: undefined,
+            media: []
+          } as EventSummary;
+        });
+    });
+  });
+
+  progress?.('Events loaded', 1, 1);
+  return items.length > 0 ? items : [{
+    id: 'events-placeholder',
+    name: 'No events parsed yet',
+    url: `${HLTV_BASE_URL}/events`,
+    status: 'upcoming',
+    media: []
+  }];
+}
+
+export async function fetchEventDetail(eventUrl: string): Promise<EventSummary | null> {
+  return await withPage(eventUrl, async (page) => {
+    const title = await page.title();
+    const bodyText = await page.locator('body').innerText();
+    const normalizeText = (value: unknown): string => String(value ?? '').replace(/\s+/g, ' ').replace(/\u00a0/g, ' ').trim();
+
+    const overview = await page.evaluate(() => {
+      const normalize = (value: unknown): string =>
+        String(value ?? '')
+          .replace(/\s+/g, ' ')
+          .replace(/\u00a0/g, ' ')
+          .trim();
+
+      const firstTextFrom = (...selectors: string[]) => {
+        for (const selector of selectors) {
+          const node = document.querySelector(selector);
+          const text = normalize(node?.textContent ?? '');
+          if (text) {
+            return text;
+          }
+        }
+        return undefined;
+      };
+
+      const infoTable = document.querySelector('.event-header-component table.info');
+      const date = firstTextFrom('.event-header-component table.info td.eventdate', '.event-header-component .eventdate', '.event-date')
+        ?? infoTable?.querySelector('.eventdate')?.textContent
+        ?? undefined;
+      const prizePool = firstTextFrom('.event-header-component table.info td.prizepool', '.event-header-component .prizepool', '.prizepool')
+        ?? infoTable?.querySelector('.prizepool')?.textContent
+        ?? undefined;
+      const location = firstTextFrom('.event-header-component table.info td.location', '.event-header-component .location', '.location')
+        ?? infoTable?.querySelector('.location')?.textContent
+        ?? undefined;
+      const teamsText = firstTextFrom('.event-header-component table.info td.teamsNumber', '.event-header-component .teamsNumber', '.teamsNumber')
+        ?? infoTable?.querySelector('.teamsNumber')?.textContent
+        ?? undefined;
+      const stage = firstTextFrom('.section-header.brackets span', '.section-header span', '.current-stage', '.event-header-component .stage')
+        || 'Overview';
+
+      const placements = Array.from(document.querySelectorAll('.placements-holder .placement')).map((placementEl) => {
+        const placement = placementEl as HTMLElement;
+        const teamNode = placement.querySelector('.team');
+        const teamText = normalize(teamNode?.textContent ?? '');
+        const rankText = Array.from(placement.children)
+          .map((node) => ({
+            node: node as HTMLElement,
+            text: normalize((node as HTMLElement).textContent ?? '')
+          }))
+          .find(({ node, text }) => text && !['team', 'team-logo', 'prize', 'club-share'].some((className) => node.classList.contains(className)))?.text;
+        const prizeText = Array.from(placement.querySelectorAll('.prize'))
+          .map((node) => normalize(node.textContent ?? ''))
+          .find((text) => text && !text.startsWith('+ Club share:'));
+        const clubShareText = Array.from(placement.querySelectorAll('.prize.club-share'))
+          .map((node) => normalize(node.textContent ?? ''))
+          .find(Boolean);
+
+        return {
+          placement: rankText || 'Unranked',
+          team: teamText || undefined,
+          amount: prizeText || undefined,
+          clubShare: clubShareText || undefined,
+        };
+      }).filter((entry) => entry.placement || entry.team || entry.amount);
+
+      const humanizeBracketRoundName = (raw?: string): string => {
+        const value = normalize(String(raw ?? ''))
+          .replace(/^.*\./, '')
+          .replace(/[-_]+/g, ' ')
+          .replace(/\s{2,}/g, ' ')
+          .trim();
+        if (!value) {
+          return 'Round';
+        }
+        const lower = value.toLowerCase();
+        if (/upper.*semi|semi.*upper/i.test(lower)) return 'Upper semi-finals';
+        if (/lower.*semi|semi.*lower/i.test(lower)) return 'Lower semi-finals';
+        if (/quarterfinal|quarter-final|round4|round-4|round 4|1\/4/i.test(lower)) return 'Quarter-finals';
+        if (/semifinal|semi-final|round2|round-2|round 2|1\/2/i.test(lower)) return 'Semi-finals';
+        if (/grandfinal|final|championship|round1|round-1|round 1|1\/1/i.test(lower)) return 'Grand Final';
+        if (/round8|round-8|round 8|round of 16|1\/8|1\/16|sixteen/i.test(lower)) return 'Round of 16';
+        if (/round16|round-16|round 16|1\/16/i.test(lower)) return 'Round of 16';
+        if (/round32|round-32|round 32|1\/32/i.test(lower)) return 'Round of 32';
+        if (/group|stage/i.test(lower)) return 'Group Stage';
+        return value;
+      };
+
+      const coerceText = (value: any): string => {
+        if (value == null) {
+          return '';
+        }
+        if (typeof value === 'string') {
+          return normalize(value);
+        }
+        if (typeof value === 'number' || typeof value === 'boolean') {
+          return String(value);
+        }
+        if (Array.isArray(value)) {
+          return value.map((item) => coerceText(item)).filter(Boolean).join(' ');
+        }
+        if (typeof value === 'object') {
+          const record = value as Record<string, any>;
+          const candidates = ['text', 'label', 'name', 'title', 'status', 'description', 'value', 'result', 'score'];
+          const directMatches = [] as string[];
+          for (const key of candidates) {
+            const entry = record[key];
+            if (entry != null && entry !== '') {
+              const text = coerceText(entry);
+              if (text) {
+                directMatches.push(text);
+              }
+            }
+          }
+          if (directMatches.length > 0) {
+            return directMatches.join(' ');
+          }
+
+          if (record.team1 != null || record.team2 != null) {
+            const left = coerceText(record.team1);
+            const right = coerceText(record.team2);
+            const scoreText = [left, right].filter(Boolean).join('-');
+            if (scoreText) {
+              return scoreText;
+            }
+          }
+
+          if (record.score != null && typeof record.score !== 'object') {
+            return coerceText(record.score);
+          }
+
+          for (const key of Object.keys(record)) {
+            const text = coerceText(record[key]);
+            if (text) {
+              return text;
+            }
+          }
+        }
+        return '';
+      };
+
+      const coerceScore = (value: any): string | undefined => {
+        if (value == null) {
+          return undefined;
+        }
+        if (typeof value === 'object') {
+          const record = value as Record<string, any>;
+          const left = coerceText(record.team1 ?? record.teamA ?? record.left ?? record.home ?? record.first ?? record.scoreLeft ?? record.score1 ?? record.leftScore);
+          const right = coerceText(record.team2 ?? record.teamB ?? record.right ?? record.away ?? record.second ?? record.scoreRight ?? record.score2 ?? record.rightScore);
+          if (/\d+/.test(left) && /\d+/.test(right)) {
+            return `${left.replace(/\D+/g, '')}-${right.replace(/\D+/g, '')}`;
+          }
+          const direct = coerceText(record.score ?? record.result ?? record.value ?? record.finalScore ?? record.points);
+          const scoreMatch = direct.match(/(\d+)\s*[-:]\s*(\d+)/i);
+          if (scoreMatch) {
+            return `${scoreMatch[1]}-${scoreMatch[2]}`;
+          }
+        }
+        const text = coerceText(value);
+        if (!text) {
+          return undefined;
+        }
+        const direct = text.match(/(\d+)\s*[-:]\s*(\d+)/i);
+        if (direct) {
+          return `${direct[1]}-${direct[2]}`;
+        }
+        const nested = text.match(/(\d+)\s*\(\d+\)\s*(?:\|\s*)?(\d+)\s*\(\d+\)/i) || text.match(/(\d+)\s*:\s*(\d+)/i);
+        if (nested) {
+          return `${nested[1]}-${nested[2]}`;
+        }
+        if (/^\d+$/.test(text)) {
+          return `${text}-${text}`;
+        }
+        return undefined;
+      };
+
+      const buildBracketMatches = (round: any) => {
+        const roundData = round as any;
+        const matches = (roundData?.slots ?? []).map((slot: any) => {
+          const slotData = slot as any;
+          const matchup = slotData?.matchup ?? {};
+          const scoreValue = coerceScore(matchup?.score ?? slotData?.score ?? matchup?.match?.score ?? slotData?.matchup?.score ?? slotData?.matchup?.match?.score);
+          const statusValue = coerceText(matchup?.match?.status ?? slotData?.status ?? slotData?.matchup?.match?.status ?? slotData?.matchup?.status);
+          const startTime = matchup?.match?.startTime ?? slotData?.matchup?.match?.startTime ?? slotData?.startTime;
+          const format = matchup?.match?.numberOfMaps ? `Bo${matchup.match.numberOfMaps}` : slotData?.matchup?.match?.numberOfMaps ? `Bo${slotData.matchup.match.numberOfMaps}` : undefined;
+          return {
+            round: humanizeBracketRoundName(roundData?.slotId?.id || roundData?.name || roundData?.type || 'Round'),
+            team1: coerceText(matchup?.team1?.name ?? matchup?.team1?.shortName ?? slotData?.slotEntry1?.description ?? slotData?.team1?.name ?? slotData?.team1?.team?.name) || undefined,
+            team2: coerceText(matchup?.team2?.name ?? matchup?.team2?.shortName ?? slotData?.slotEntry2?.description ?? slotData?.team2?.name ?? slotData?.team2?.team?.name) || undefined,
+            score: scoreValue,
+            status: statusValue || undefined,
+            matchUrl: coerceText(matchup?.match?.matchPageURL ?? slotData?.matchup?.match?.matchPageURL ?? slotData?.matchup?.match?.pageUrl ?? slotData?.pageUrl) || undefined,
+            time: startTime ? new Date(startTime).toLocaleString('en-GB', {
+              timeZone: 'Asia/Shanghai',
+              day: '2-digit',
+              month: 'short',
+              year: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit',
+              hour12: false,
+              timeZoneName: 'short'
+            }).replace(/\s+/g, ' ').trim() : undefined,
+            format
+          };
+        }).filter((match: any) => match.team1 || match.team2 || match.score || match.matchUrl);
+        return matches;
+      };
+
+      const collectBracketRoundsFromObject = (container: any): any[] => {
+        if (!container || typeof container !== 'object') {
+          return [];
+        }
+
+        if (Array.isArray(container.rounds)) {
+          return container.rounds;
+        }
+
+        const nested: any[] = [];
+        for (const [key, value] of Object.entries(container)) {
+          if (key === 'display' || key === 'type' || key === 'name' || key === 'tierName' || key === 'upperTierName' || key === 'lowerTierName') {
+            continue;
+          }
+          if (Array.isArray(value)) {
+            for (const item of value) {
+              nested.push(...collectBracketRoundsFromObject(item));
+            }
+          } else if (value && typeof value === 'object') {
+            const valueData = value as any;
+            if (valueData.slotId || valueData.slots || valueData.matchup || valueData.team1 || valueData.team2) {
+              nested.push(valueData);
+            } else {
+              nested.push(...collectBracketRoundsFromObject(valueData));
+            }
+          }
+        }
+        return nested;
+      };
+
+      const renderedBracketSections = Array.from(document.querySelectorAll('.section-header'))
+        .filter((header) => /playoffs|group stage/i.test(normalize(header.textContent ?? '')))
+        .map((header) => {
+          const sectionName = normalize(header.textContent ?? '');
+          const container = header.parentElement?.querySelector('.rounds, .bracket, .bracket-wrap');
+          const rounds = container ? Array.from(container.querySelectorAll(':scope > .round, .rounds > .round')) : [];
+          return {
+            sectionName,
+            rounds
+          };
+        })
+        .filter(({ rounds }) => rounds.length > 0)
+        .flatMap(({ sectionName, rounds }) => rounds.map((roundNode) => {
+          const roundName = humanizeBracketRoundName(normalize(roundNode.querySelector('.round-header, .round-title, .round-name, [data-round-name]')?.textContent ?? roundNode.getAttribute('data-round-name') ?? 'Round'));
+          const matches = Array.from(roundNode.querySelectorAll('.match, .matchup, .slot'))
+            .map((node) => {
+              const teamNodes = Array.from(node.querySelectorAll('.team, .team-name, .teamName, .opponent'))
+                .map((teamNode) => normalize(teamNode.textContent ?? ''))
+                .filter(Boolean);
+              const score = normalize(node.querySelector('.score, .match-score, .score-box')?.textContent ?? '');
+              const time = normalize(node.querySelector('.time, .match-time')?.textContent ?? '');
+              const format = normalize(node.querySelector('.format, .match-format')?.textContent ?? '');
+              return {
+                round: roundName,
+                team1: teamNodes[0],
+                team2: teamNodes[1],
+                score: score || undefined,
+                status: normalize(node.querySelector('.status, .match-status')?.textContent ?? ''),
+                matchUrl: (node.querySelector('a') as HTMLAnchorElement | null)?.href || undefined,
+                time: time || undefined,
+                format: format || undefined
+              };
+            })
+            .filter((match: any) => match.team1 || match.team2 || match.score || match.matchUrl);
+
+          return {
+            stage: sectionName,
+            round: roundName,
+            matches
+          };
+        }));
+
+      const bracketSections: Array<{ stage: string; round: string; matches: Array<{ round: string; team1?: string; team2?: string; score?: string; status?: string; matchUrl?: string; time?: string; format?: string }> }> = [];
+      for (const section of renderedBracketSections) {
+        bracketSections.push(section);
+      }
+      const sectionHeaders = Array.from(document.querySelectorAll('.section-header'));
+      for (const sectionHeader of sectionHeaders) {
+        const sectionName = normalize(sectionHeader.textContent ?? '');
+        if (!/playoffs|group stage/i.test(sectionName)) {
+          continue;
+        }
+
+        let bracketNode: Element | null = null;
+        let sibling = sectionHeader.nextElementSibling;
+        while (sibling) {
+          if (sibling.matches('[data-slotted-bracket-json]')) {
+            bracketNode = sibling;
+            break;
+          }
+          sibling = sibling.nextElementSibling;
+        }
+
+        if (!bracketNode) {
+          continue;
+        }
+
+        try {
+          const parsed = JSON.parse(bracketNode.getAttribute('data-slotted-bracket-json') || '{}');
+          const rounds = collectBracketRoundsFromObject(parsed).map((round: any) => {
+            const roundName = humanizeBracketRoundName(round?.slotId?.id || round?.name || round?.type || 'Round');
+            const matches = buildBracketMatches(round);
+            return {
+              stage: sectionName,
+              round: roundName,
+              matches
+            };
+          }).filter((round: any) => round.matches.length > 0);
+
+          bracketSections.push(...rounds);
+        } catch {
+          // Ignore malformed bracket payloads.
+        }
+      }
+
+      return {
+        date: date || undefined,
+        prizePool: prizePool || undefined,
+        teams: teamsText ? Number.parseInt((teamsText.match(/\d+/) ?? [])[0] || '0', 10) || undefined : undefined,
+        location: location || undefined,
+        currentStage: stage,
+        prizeDistribution: placements,
+        bracket: bracketSections,
+        matches: []
+      };
+    });
+
+    const media = await page.evaluate(() => {
+      return Array.from(document.querySelectorAll('img, video, iframe, source, audio, embed, object'))
+        .map((node) => {
+          const src = (node as HTMLImageElement | HTMLMediaElement).src || (node as HTMLImageElement).getAttribute('src') || (node as HTMLImageElement).getAttribute('data-src') || '';
+          return src || (node as HTMLElement).outerHTML.slice(0, 220);
+        })
+        .filter(Boolean)
+        .slice(0, 20);
+    });
+
+    const pageTitle = await page.evaluate(() => {
+      const selectors = [
+        '.big-event-name',
+        'h1.event-hub-title',
+        '.event-header-component h1',
+        '.event-name',
+        '.event-header-component .text-ellipsis',
+        '.event-col .col-value .text-ellipsis',
+        '.text-ellipsis'
+      ];
+
+      for (const selector of selectors) {
+        const node = document.querySelector(selector);
+        const text = (node?.textContent ?? '').replace(/\s+/g, ' ').replace(/\u00a0/g, ' ').trim();
+        if (text && !/^(?:All events|Ongoing|Archive|Calendar|Players|Teams|Results|Matches|Overview)$/i.test(text)) {
+          return { text, isBig: Boolean(document.querySelector('.big-event-name')) };
+        }
+      }
+
+      return { text: '', isBig: false };
+    });
+    const normalizedTitle = cleanEventTitle(pageTitle.text || title || 'HLTV Event');
+    const formattedTitle = pageTitle.isBig ? `[BIG] ${normalizedTitle}` : normalizedTitle;
+
+    return {
+      id: eventUrl,
+      name: formattedTitle,
+      url: eventUrl,
+      status: /live/i.test(bodyText) ? 'live' : /upcoming|tomorrow|today|starts|scheduled|opening/i.test(bodyText) ? 'upcoming' : 'past',
+      date: overview.date || undefined,
+      prizePool: overview.prizePool || undefined,
+      teams: overview.teams,
+      location: overview.location || undefined,
+      currentStage: overview.currentStage || undefined,
+      matches: overview.matches,
+      standings: undefined,
+      prizeDistribution: overview.prizeDistribution,
+      bracket: overview.bracket,
+      media
+    } satisfies EventSummary;
+  });
+}
+
 export async function fetchMatches(progress?: (message: string, current: number, total: number) => void): Promise<MatchSummary[]> {
   progress?.('matches…', 1, 1);
   const items = await withPage(`${HLTV_BASE_URL}/matches`, async (page) => {
     return await page.$$eval('a[href*="/matches/"]', (links) => {
-      const normalizeText = (value: string): string => value.replace(/\s+/g, ' ').replace(/\u00a0/g, ' ').trim();
-      const cleanTitleText = (value: string): string => normalizeText(value)
+      const normalizeText = (value: unknown): string => String(value ?? '').replace(/\s+/g, ' ').replace(/\u00a0/g, ' ').trim();
+      const cleanTitleText = (value: string | number | null | undefined): string => normalizeText(value)
         .replace(/([a-z])(?=(?:an?|\d+)\s*(?:seconds?|minutes?|hours?|days?)\s+ago)/gi, '$1 ')
         .replace(/\s+\d+\s*comments?\b.*$/gi, '')
         .replace(/\s+(?:an?|[0-9]+)\s*(?:seconds?|minutes?|hours?|days?)\s+ago.*$/gi, '')
@@ -1128,8 +1708,8 @@ export async function fetchResults(progress?: (message: string, current: number,
 
   const items = await withPage(`${HLTV_BASE_URL}/results`, async (page) => {
     return await page.$$eval('a[href*="/matches/"]', (links) => {
-      const normalizeText = (value: string): string => value.replace(/\s+/g, ' ').replace(/\u00a0/g, ' ').trim();
-      const cleanTitleText = (value: string): string => normalizeText(value)
+      const normalizeText = (value: unknown): string => String(value ?? '').replace(/\s+/g, ' ').replace(/\u00a0/g, ' ').trim();
+      const cleanTitleText = (value: string | number | null | undefined): string => normalizeText(value)
         .replace(/([a-z])(?=(?:an?|\d+)\s*(?:seconds?|minutes?|hours?|days?)\s+ago)/gi, '$1 ')
         .replace(/\s+\d+\s*comments?\b.*$/gi, '')
         .replace(/\s+(?:an?|[0-9]+)\s*(?:seconds?|minutes?|hours?|days?)\s+ago.*$/gi, '')
@@ -1269,12 +1849,12 @@ export async function fetchResults(progress?: (message: string, current: number,
 }
 
 export async function fetchNews(progress?: (message: string, current: number, total: number) => void): Promise<NewsSummary[]> {
-  progress?.('Loading HLTV news list…', 0, 100);
+  progress?.('HLTV news list…', 0, 100);
   const items = await withPage(`${HLTV_BASE_URL}/`, async (page) => {
     progress?.('Fetching news links…', 15, 100);
     const list = await page.$$eval('a[href*="/news/"]', (links) => {
-      const normalizeText = (value: string): string => value.replace(/\s+/g, ' ').replace(/\u00a0/g, ' ').trim();
-      const cleanTitleText = (value: string): string => normalizeText(value)
+      const normalizeText = (value: unknown): string => String(value ?? '').replace(/\s+/g, ' ').replace(/\u00a0/g, ' ').trim();
+      const cleanTitleText = (value: string | number | null | undefined): string => normalizeText(value)
         .replace(/([a-z])(?=(?:an?|\d+)\s*(?:seconds?|minutes?|hours?|days?)\s+ago)/gi, '$1 ')
         .replace(/\s+\d+\s*comments?\b.*$/gi, '')
         .replace(/\s+(?:an?|[0-9]+)\s*(?:seconds?|minutes?|hours?|days?)\s+ago.*$/gi, '')

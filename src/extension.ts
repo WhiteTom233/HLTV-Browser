@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { HLTVTreeDataProvider, type HLTVNode } from './providers/HLTVTreeDataProvider';
-import { fetchNewsArticle, type NewsSummary } from './services/hltvClient';
+import { fetchEventDetail, fetchNewsArticle, type EventSummary, type NewsSummary } from './services/hltvClient';
 
 function statTableHtml(title: string, detail: Record<string, unknown>, sectionTitle?: string, rows: Array<Record<string, string | number>> = []): string {
   const columns = ['Player', 'Team', 'K-D', 'Swing', 'ADR', 'KAST', 'Rating'];
@@ -119,13 +119,189 @@ function statTableHtml(title: string, detail: Record<string, unknown>, sectionTi
   `;
 }
 
-function escapeHtml(value: string): string {
-  return value
+function escapeHtml(value: unknown): string {
+  return String(value ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function sanitizeMediaUrl(value: string): string | null {
+  try {
+    const url = new URL(value, 'https://www.hltv.org');
+    if (url.protocol === 'http:' || url.protocol === 'https:') {
+      return url.toString();
+    }
+  } catch {
+    // Ignore invalid URLs; they will not be rendered.
+  }
+  return null;
+}
+
+function renderEventHtml(event: EventSummary): string {
+  const safeTitle = escapeHtml(String(event.name ?? 'HLTV Event'));
+  const safeDate = escapeHtml(String(event.date ?? 'Unknown date'));
+  const safePrizePool = escapeHtml(String(event.prizePool ?? 'Unknown'));
+  const safeTeams = typeof event.teams === 'number' ? String(event.teams) : 'Unknown';
+  const safeLocation = escapeHtml(String(event.location ?? 'Unknown location'));
+  const safeStage = escapeHtml(String(event.currentStage ?? 'Overview'));
+  const safeStatus = escapeHtml(String(event.status ?? 'upcoming'));
+
+  const prizeDistributionHtml = (event.prizeDistribution && event.prizeDistribution.length > 0)
+    ? `<table class="standings">
+        <thead><tr><th>Placement</th><th>Team</th><th>Prize</th></tr></thead>
+        <tbody>${event.prizeDistribution.map((row) => `<tr><td>${escapeHtml(row.placement)}</td><td>${escapeHtml(row.team ?? 'TBD')}</td><td>${escapeHtml(row.amount ?? row.clubShare ?? '—')}</td></tr>`).join('')}</tbody>
+      </table>`
+    : '<p>No prize distribution data available.</p>';
+
+  const bracketHtml = (event.bracket && event.bracket.length > 0)
+    ? event.bracket.map((round) => `
+        <div class="round-card">
+          <h4>${escapeHtml(round.stage ?? 'Bracket')} · ${escapeHtml(round.round)}</h4>
+          <ul>${round.matches.map((match) => {
+            const sideA = match.team1 ?? 'TBD';
+            const sideB = match.team2 ?? 'TBD';
+            const timeLabel = match.time ? ` · ${escapeHtml(match.time)}` : '';
+            const scoreText = typeof match.score === 'string' && match.score.trim() ? match.score.trim() : '';
+            const formatText = typeof match.format === 'string' && match.format.trim() ? match.format.trim() : '';
+            const statusText = typeof match.status === 'string' && match.status.trim() ? match.status.trim() : '';
+            const scoreLabel = scoreText ? ` <span class="score">${escapeHtml(scoreText)}</span>` : '';
+            const formatLabel = formatText ? ` · ${escapeHtml(formatText)}` : '';
+            const statusLabel = statusText ? ` <span class="status">${escapeHtml(statusText)}</span>` : '';
+            return `
+              <li>
+                ${escapeHtml(sideA)} vs ${escapeHtml(sideB)}${timeLabel}${formatLabel}${scoreLabel}${statusLabel}
+              </li>
+            `;
+          }).join('')}</ul>
+        </div>
+      `).join('')
+    : '<p>No bracket data available.</p>';
+
+  return `
+    <!DOCTYPE html>
+    <html lang="en">
+      <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <style>
+          :root { color-scheme: light dark; }
+          body {
+            font-family: var(--vscode-font-family);
+            background: var(--vscode-editor-background);
+            color: var(--vscode-editor-foreground);
+            margin: 0;
+            padding: 20px 24px 48px;
+            line-height: 1.6;
+          }
+          .toolbar {
+            position: sticky;
+            top: 12px;
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+            margin: 0 0 18px;
+            z-index: 10;
+          }
+          .action-btn {
+            appearance: none;
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 6px;
+            background: var(--vscode-button-secondaryBackground, var(--vscode-editorWidget-background));
+            color: var(--vscode-button-secondaryForeground, var(--vscode-editor-foreground));
+            padding: 7px 12px;
+            font: inherit;
+            cursor: pointer;
+          }
+          .header {
+            border-bottom: 1px solid var(--vscode-panel-border);
+            margin-bottom: 18px;
+            padding-bottom: 14px;
+          }
+          h1 { margin: 0 0 8px; font-size: 28px; }
+          h3, h4 { margin: 0 0 8px; }
+          .meta {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 12px;
+            margin: 18px 0;
+          }
+          .card {
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 8px;
+            background: var(--vscode-sideBar-background);
+            padding: 12px 14px;
+          }
+          .label {
+            display: block;
+            font-size: 11px;
+            color: var(--vscode-descriptionForeground);
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            margin-bottom: 6px;
+          }
+          .section {
+            margin-top: 20px;
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 8px;
+            background: var(--vscode-sideBar-background);
+            padding: 12px 14px;
+          }
+          table {
+            width: 100%; border-collapse: collapse; margin-top: 8px;
+          }
+          th, td {
+            text-align: left; padding: 8px 10px; border-top: 1px solid var(--vscode-panel-border);
+          }
+          ul { margin: 0; padding-left: 18px; }
+          li { margin: 6px 0; }
+          .score { font-weight: 700; }
+          .status { color: var(--vscode-descriptionForeground); }
+          .round-card { margin-top: 12px; }
+          .round-card ul { margin-top: 8px; }
+        </style>
+      </head>
+      <body>
+        <div class="toolbar">
+          <button id="open-page" class="action-btn" type="button">Open event page</button>
+        </div>
+
+        <div class="header">
+          <h1>${safeTitle}</h1>
+          <div class="meta">
+            <div class="card"><span class="label">Status</span><strong>${safeStatus}</strong></div>
+            <div class="card"><span class="label">Date</span><strong>${safeDate}</strong></div>
+            <div class="card"><span class="label">Current stage</span><strong>${safeStage}</strong></div>
+            <div class="card"><span class="label">Prize pool</span><strong>${safePrizePool}</strong></div>
+            <div class="card"><span class="label">Teams</span><strong>${safeTeams}</strong></div>
+            <div class="card"><span class="label">Location</span><strong>${safeLocation}</strong></div>
+          </div>
+        </div>
+
+        <div class="section">
+          <h3>Prize distribution</h3>
+          ${prizeDistributionHtml}
+        </div>
+
+        <div class="section">
+          <h3>Bracket</h3>
+          ${bracketHtml}
+        </div>
+
+        <script>
+          const openBtn = document.getElementById('open-page');
+          openBtn.addEventListener('click', () => {
+            const safeUrl = '${escapeHtml(event.url)}';
+            if (/^https?:\/\//i.test(safeUrl)) {
+              window.open(safeUrl, '_blank');
+            }
+          });
+        </script>
+      </body>
+    </html>
+  `;
 }
 
 function renderArticleHtml(article: NewsSummary): string {
@@ -597,7 +773,7 @@ function buildDashboardSections(detail: Record<string, unknown>, sectionTitle?: 
   return sections;
 }
 
-async function refreshAll(matchesProvider: HLTVTreeDataProvider, resultsProvider: HLTVTreeDataProvider, newsProvider: HLTVTreeDataProvider): Promise<void> {
+async function refreshAll(matchesProvider: HLTVTreeDataProvider, resultsProvider: HLTVTreeDataProvider, eventsProvider: HLTVTreeDataProvider, newsProvider: HLTVTreeDataProvider): Promise<void> {
   await vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,
@@ -607,15 +783,19 @@ async function refreshAll(matchesProvider: HLTVTreeDataProvider, resultsProvider
     async (progress) => {
       progress.report({ message: 'Matches', increment: 0 });
       await matchesProvider.refresh();
-      progress.report({ message: 'Matches (Finished)', increment: 33 });
+      progress.report({ message: 'Matches (Finished)', increment: 25 });
 
       progress.report({ message: 'Results', increment: 0 });
       await resultsProvider.refresh();
-      progress.report({ message: 'Results (Finished)', increment: 33 });
+      progress.report({ message: 'Results (Finished)', increment: 25 });
+
+      progress.report({ message: 'Events', increment: 0 });
+      await eventsProvider.refresh();
+      progress.report({ message: 'Events (Finished)', increment: 25 });
 
       await newsProvider.refresh((message, current, total) => {
         const label = message || `Loading (News ${current} / ${total})`;
-        const stepValue = total > 0 ? (34 / total) : 34;
+        const stepValue = total > 0 ? (25 / total) : 25;
         progress.report({
           message: label,
           increment: stepValue
@@ -628,6 +808,7 @@ async function refreshAll(matchesProvider: HLTVTreeDataProvider, resultsProvider
 export function activate(context: vscode.ExtensionContext): void {
   const matchesProvider = new HLTVTreeDataProvider('matches');
   const resultsProvider = new HLTVTreeDataProvider('results');
+  const eventsProvider = new HLTVTreeDataProvider('events');
   const newsProvider = new HLTVTreeDataProvider('news');
 
   const matchesView = vscode.window.createTreeView('hltv.matches', {
@@ -637,6 +818,11 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const resultsView = vscode.window.createTreeView('hltv.results', {
     treeDataProvider: resultsProvider,
+    showCollapseAll: true
+  });
+
+  const eventsView = vscode.window.createTreeView('hltv.events', {
+    treeDataProvider: eventsProvider,
     showCollapseAll: true
   });
 
@@ -709,12 +895,51 @@ export function activate(context: vscode.ExtensionContext): void {
     panel.webview.html = statTableHtml(tableTitle, normalizedDetail, sectionTitle, rows);
   });
 
-  const refreshCommand = vscode.commands.registerCommand('hltv.refresh', async () => {
-    await refreshAll(matchesProvider, resultsProvider, newsProvider);
+  const openEventDetailCommand = vscode.commands.registerCommand('hltv.openEventDetail', async (event?: EventSummary) => {
+    const targetUrl = event?.url ?? '';
+    if (!targetUrl) {
+      return;
+    }
+
+    const panel = vscode.window.createWebviewPanel(
+      'hltvEventDetail',
+      event?.name ?? 'HLTV Event',
+      vscode.ViewColumn.Active,
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: []
+      }
+    );
+
+    panel.webview.html = `<!DOCTYPE html><html><body style="font-family: var(--vscode-font-family); background: var(--vscode-editor-background); color: var(--vscode-editor-foreground); padding: 24px;"><h2>${escapeHtml(event?.name ?? 'HLTV Event')}</h2><p>Loading event details…</p></body></html>`;
+
+    await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: 'Loading HLTV event',
+        cancellable: false
+      },
+      async (progress) => {
+        progress.report({ message: `Loading ${event?.name ?? 'event'}…`, increment: 10 });
+        try {
+          const detail = await fetchEventDetail(targetUrl);
+          progress.report({ message: 'Rendering event…', increment: 90 });
+          panel.webview.html = detail ? renderEventHtml(detail) : `<!DOCTYPE html><html><body style="font-family: var(--vscode-font-family); background: var(--vscode-editor-background); color: var(--vscode-editor-foreground); padding: 24px;"><h2>${escapeHtml(event?.name ?? 'HLTV Event')}</h2><p>Unable to load this event detail.</p></body></html>`;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Unable to load this event detail.';
+          panel.webview.html = `<!DOCTYPE html><html><body style="font-family: var(--vscode-font-family); background: var(--vscode-editor-background); color: var(--vscode-editor-foreground); padding: 24px;"><h2>${escapeHtml(event?.name ?? 'HLTV Event')}</h2><p>${escapeHtml(message)}</p></body></html>`;
+        }
+      }
+    );
   });
 
-  context.subscriptions.push(matchesView, resultsView, newsView, refreshCommand, copyNewsCommand, openNewsArticleCommand, showStatsTableCommand);
-  void refreshAll(matchesProvider, resultsProvider, newsProvider);
+  const refreshCommand = vscode.commands.registerCommand('hltv.refresh', async () => {
+    await refreshAll(matchesProvider, resultsProvider, eventsProvider, newsProvider);
+  });
+
+  context.subscriptions.push(matchesView, resultsView, eventsView, newsView, refreshCommand, copyNewsCommand, openNewsArticleCommand, openEventDetailCommand, showStatsTableCommand);
+  void refreshAll(matchesProvider, resultsProvider, eventsProvider, newsProvider);
 }
 
 export function deactivate(): void {

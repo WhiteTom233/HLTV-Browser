@@ -1,7 +1,7 @@
 {
   "name": "hltv-browser-vscode-extension",
   "displayName": "HLTV Browser",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "local",
   "engines": {
     "vscode": "^1.90.0"
@@ -13,6 +13,7 @@
   "activationEvents": [
     "onView:hltv.matches",
     "onView:hltv.results",
+    "onView:hltv.events",
     "onView:hltv.news",
     "onCommand:hltv.refresh"
   ],
@@ -39,6 +40,11 @@
           "icon": "resources/icon.svg"
         },
         {
+          "id": "hltv.events",
+          "name": "Events",
+          "icon": "resources/icon.svg"
+        },
+        {
           "id": "hltv.news",
           "name": "News",
           "icon": "resources/icon.svg"
@@ -59,7 +65,7 @@
       "view/title": [
         {
           "command": "hltv.refresh",
-          "when": "view == hltv.matches || view == hltv.results || view == hltv.news",
+          "when": "view == hltv.matches || view == hltv.results || view == hltv.events || view == hltv.news",
           "group": "navigation",
           "position": "before"
         }
