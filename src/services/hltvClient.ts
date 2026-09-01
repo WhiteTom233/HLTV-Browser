@@ -438,13 +438,15 @@ async function getMatchScheduleInfo(page: Page): Promise<{ dateTime?: string; da
   return await page.evaluate(() => {
     const timeEl = document.querySelector('.time[data-unix]');
     const dateEl = document.querySelector('.date[data-unix]');
-    const rawUnix = Number(timeEl?.getAttribute('data-unix') ?? dateEl?.getAttribute('data-unix') ?? '');
+    const rawUnixInput = timeEl?.getAttribute('data-unix') ?? dateEl?.getAttribute('data-unix') ?? '';
+    const rawUnix = Number(rawUnixInput);
     if (!Number.isFinite(rawUnix)) {
       return undefined;
     }
 
-    const utc = new Date(rawUnix);
-    const local = new Date(rawUnix + 8 * 60 * 60 * 1000);
+    const timestampMs = rawUnix * 1000;
+    const utc = new Date(timestampMs);
+    const local = new Date(timestampMs + 8 * 60 * 60 * 1000);
     const iso = local.toISOString();
     return {
       dateTime: `${iso.slice(0, 10)} ${iso.slice(11, 16)} (UTC+8)`,
@@ -646,6 +648,52 @@ export async function fetchMatches(progress?: (message: string, current: number,
         return cleaned.slice(0, 3).join(' · ');
       };
 
+      const readTeamNameFromMatchLink = (link: Element, side: 'team1' | 'team2'): string | null => {
+        const selectors = [
+          `.match-team.${side} .match-teamname`,
+          `.line-align.${side} .team`,
+          `.${side} .team`,
+          `.${side} .teamName`,
+          `.${side} .match-teamname`
+        ];
+
+        for (const selector of selectors) {
+          const element = link.querySelector(selector);
+          const value = normalizeText(element?.textContent ?? '');
+          if (value) {
+            return value;
+          }
+        }
+
+        return null;
+      };
+
+      const extractTeamNamesFromMatchLink = (link: Element): [string, string] | null => {
+        const team1 = readTeamNameFromMatchLink(link, 'team1');
+        const team2 = readTeamNameFromMatchLink(link, 'team2');
+
+        if (team1 && team2) {
+          return [team1, team2];
+        }
+
+        if (team1 || team2) {
+          const combinedText = normalizeText(link.textContent ?? '');
+          const teamCandidates = splitCompactTeamNames(combinedText);
+          if (teamCandidates.length >= 2) {
+            return [teamCandidates[0], teamCandidates[1]];
+          }
+          return [team1 ?? team2 ?? 'Team A', team2 ?? team1 ?? 'Team B'];
+        }
+
+        const combinedText = normalizeText(link.textContent ?? '');
+        const teamCandidates = splitCompactTeamNames(combinedText);
+        if (teamCandidates.length >= 2) {
+          return [teamCandidates[0], teamCandidates[1]];
+        }
+
+        return null;
+      };
+
       const byHref = new Map<string, { texts: Set<string>; teams: [string, string] | null }>();
 
       for (const link of Array.from(document.querySelectorAll('a.match-top, a.match-info, a.match-teams, a.match-team-livescore'))) {
@@ -675,7 +723,9 @@ export async function fetchMatches(progress?: (message: string, current: number,
         .map(({ href, values, teams }) => {
           const label = teams ? `${teams[0]} vs ${teams[1]}` : buildMatchLabel(href, values);
           const scoreText = values.find((value) => /\d+\s*\(\d+\)\s*\d+\s*\(\d+\)/i.test(value) || /\d+\s*:\s*\d+/.test(value));
-          const phaseHint = values.some((value) => /live/i.test(value)) ? 'live' : scoreText ? 'live' : 'past';
+          const liveScoreText = values.find((value) => /\d+\s*\(\d+\)\s*\d+\s*\(\d+\)/i.test(value) || /live/i.test(value));
+          const upcomingText = values.find((value) => /\d{1,2}:\d{2}/.test(value) && !/\d+\s*\(\d+\)\s*\d+\s*\(\d+\)/i.test(value));
+          const phaseHint = liveScoreText ? 'live' : upcomingText ? 'upcoming' : 'past';
           const format = values.find((value) => /^bo\d+$/i.test(normalizeText(value))) ?? 'Bo3';
           const sanitizeTeamToken = (value: string): string => normalizeText(value)
             .replace(/^(?:live\s*)+/i, '')
