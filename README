@@ -1,33 +1,171 @@
-# HLTV Browser VSCode Extension
+# HLTV Browser VS Code Extension
 
-这是一个 VSCode 扩展插件。
+## Overview
 
-有两大核心内容：
-1. 比赛面板显示所有比赛。  
-   分为过去的，正在进行的和将来的。  
-   比赛支持根据队伍、赛事进行筛选。  
-   过去的比赛要显示比赛时间，选手的 Rating 和 Performance（也就是对位）。  
-   正在进行的比赛要能实时显示比分，以及击杀提示（击杀人、被击杀人、辅助击杀人、击杀武器、击杀方式等）。  
-   将来的比赛要能够显示选手的最近 Rating 以及队伍地图的最近胜率，以及比赛时间。
-2. 新闻面板显示最近的大新闻，以及能够根据时间、等级（大新闻、快讯）和关键词筛选新闻，并有详细页面，详细页面需要有评论。
+This extension fetches HLTV match, result, and news data and presents it in a compact, text-first VS Code tree + Webview experience. The current implementation is designed around three sidebar views:
 
-核心要素：
-1. 这是一个类似于摸鱼的插件。所以所有的页面都必须以纯文字在 VSCode 侧边栏显示。没有任何花里胡哨的背景、图标、字体等，尽量不要让人一眼看出来这是 HLTV 页面。（纯文字就挺好的）
-2. 网站部分访问可能需要 Cloudflare 验证，如果弹出来了，就请用户自己点击一下 Verification box 通过就行了。
+- Matches
+- Results
+- News
 
-项目架构：
-- `src/extension.ts`: 扩展入口，注册 Matches / News 两个树视图并绑定刷新命令。
-- `src/providers/HLTVTreeDataProvider.ts`: 负责把抓取后的数据转成 VS Code TreeItem 列表，显示过去/正在进行/将来的比赛，以及头条/快讯。
-- `src/services/hltvClient.ts`: 负责访问 HLTV 页面、检测 Cloudflare 验证、抓取 HTML 并使用 cheerio 做结构化解析。
+The extension is intentionally lightweight and editor-centric: it favors plain text nodes, Webviews, and structured detail panels over loading raw HLTV pages directly in-browser.
 
-当前开发状态：
-- 已完成基础工程骨架；
-- 已接入 HLTV 页面抓取与 Cloudflare 兜底提示；
-- 仍需在真实 HLTV 页面通过验证后，继续补充低层数据字段和更精细的筛选逻辑。
+## Current feature set
 
-本地准备工作：
-1. 安装 Node.js 20+（已在本环境通过 nvm 完成）；
-2. 在仓库根目录执行 `npm install`；
-3. 执行 `npm run compile` 进行 TypeScript 编译验证；
-4. 在 VS Code 中按 F5 启动扩展开发宿主。
+- Match list grouped by phase:
+  - live
+  - upcoming
+  - past
+- Results list for finished matches, reusing the same match detail rendering flow as the regular matches view.
+- Match detail expansion with:
+  - teams, format, event, date/time
+  - match score and live score
+  - per-map results
+  - player stats grouped by Summary / Map sections
+- Stats view in a table/Webview form with sortable/draggable columns.
+- Dedicated News article panes with:
+  - loading progress notification
+  - structured article extraction from HLTV
+  - optional media toggle
+  - copy current Webview HTML to clipboard
+- Automatic Cloudflare fallback detection and user-facing error messaging.
+
+## Project architecture
+
+### 1. Extension entry: `src/extension.ts`
+
+This file is the VS Code host integration layer.
+
+Responsibilities:
+
+- creates the three tree views: `hltv.matches`, `hltv.results`, `hltv.news`
+- registers commands:
+  - `hltv.refresh`
+  - `hltv.openNewsArticle`
+  - `hltv.showMatchStatsTable`
+  - `hltv.copyNewsArticle`
+- starts the initial refresh cycle when the extension activates
+- renders HTML for match-stat tables and news article Webviews
+- provides the UI for toggling embedded media and copying the rendered article source
+
+Key concepts in this file:
+
+- `activate(context)` sets up providers and commands
+- `refreshAll(...)` fetches Matches, Results, and News in one progress workflow
+- `renderArticleHtml(...)` sanitizes HLTV article content and renders it in a VS Code-styled panel
+- `statTableHtml(...)` renders per-map/per-summary player stats as a table with draggable columns
+
+### 2. Tree provider: `src/providers/HLTVTreeDataProvider.ts`
+
+This file transforms fetched data into VS Code `TreeItem` nodes.
+
+Responsibilities:
+
+- fetches `MatchSummary[]` / `NewsSummary[]` from the scraper layer
+- groups nodes into matching sections and phases
+- lazy-loads match details when a match node is expanded
+- builds command-driven nodes for:
+  - summary match stats
+  - map-specific stats
+  - open match page
+  - open news article
+
+Important behavior:
+
+- `buildMatchNodes()` creates match nodes with phase labels and tooltip metadata
+- `getChildren(element)` fetches detailed match information on demand
+- `buildMatchDetailNodes(...)` creates section nodes like `Summary: 2-1`, `Anubis: 13-8`, etc.
+- `buildNewsNodes()` creates click-to-open article list items
+
+### 3. HLTV scraper: `src/services/hltvClient.ts`
+
+This is the data extraction layer.
+
+Responsibilities:
+
+- launches a headless Playwright browser
+- visits HLTV pages with a browser context adapted for HLTV access
+- detects Cloudflare interstitials before continuing
+- extracts:
+  - match lists
+  - recent results
+  - live match details
+  - map results and scoreboard metadata
+  - player stats for Summary / individual maps
+  - article title, metadata, sanitized article body
+
+Data contracts defined here include:
+
+- `MatchSummary`
+- `MatchDetail`
+- `MatchMapResult`
+- `MatchPlayerStat`
+- `NewsSummary`
+
+This module also contains the normalization logic that handles:
+
+- team name parsing from HLTV match links
+- result-card reconstruction for article pages
+- local time conversion for match dates
+- scoreboard and live-map detection fallbacks
+- article content filtering to remove junk blocks and preserve the real article structure
+
+## Request flow / runtime behavior
+
+1. VS Code activates the extension.
+2. `activate()` creates three providers and binds refresh + detail commands.
+3. `refreshAll()` loads Match, Results, and News data concurrently in a user-visible progress workflow.
+4. The tree renders match/news items.
+5. When a user expands a match node, `fetchMatchDetail()` loads that page and extracts:
+   - team names
+   - score
+   - map results
+   - per-section player stats
+6. Clicking a match detail node opens a stat table Webview.
+7. Clicking a News item opens a dedicated article Webview panel.
+8. The article panel shows sanitized HLTV content, hides media by default, and exposes a toolbar with:
+   - Load media
+   - Copy
+
+## Important files
+
+- `package.json` — extension manifest, commands, views, and scripts
+- `src/extension.ts` — VS Code extension entry and Webview rendering
+- `src/providers/HLTVTreeDataProvider.ts` — tree data provider + lazy detail loading
+- `src/services/hltvClient.ts` — Playwright / HLTV scraping and normalization
+- `resources/` — extension branding assets
+
+## Development setup
+
+### Install dependencies
+
+```bash
+npm install
+```
+
+### Compile the extension
+
+```bash
+npm run compile
+```
+
+### Run in VS Code
+
+Press `F5` in the VS Code extension host to launch the extension in a development window.
+
+## Notes for maintainers
+
+- The scraper is intentionally resilient to HLTV DOM drift. Match and news parsing uses a mix of selectors and heuristics to handle the site’s many layouts.
+- New HLTV pages may require targeted selector adjustments, especially for live pages and special article templates.
+- This project intentionally avoids rendering the full HLTV page in the editor; all display is via structured text and Webviews to keep the extension readable and low-friction.
+- Media is hidden by default in article pages to prevent noisy images or embedded widgets from cluttering the interface.
+
+## Typical commands
+
+```bash
+npm install
+npm run compile
+```
+
+The extension can then be run with the VS Code debug launcher or by opening the project in the Extension Development Host.
 
